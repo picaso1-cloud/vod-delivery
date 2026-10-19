@@ -49,6 +49,27 @@ cp .env.example .env       # fill BOT_TOKEN and XSTREAM_* credentials
 
 The first Telegram `/start` claims ownership when the allowlist is empty.
 
+## Regenerate from scratch (one stop)
+
+Everything needed to rebuild the stack is documented in **[docs/SETUP.md](docs/SETUP.md)**:
+
+```bash
+./scripts/bootstrap.sh     # venv + dependencies + .env template
+make index                 # provider catalogs → SQLite → embeddings → turbovec index
+make run                   # bot + web panel + stream proxy
+```
+
+`docs/SETUP.md` covers the provider catalog fetch, title parsing, SQLite schema,
+the `paraphrase-multilingual-MiniLM-L12-v2` embedding pipeline (384 dims, CPU),
+the turbovec `IdMapIndex` build, the llama.cpp LLM configuration, systemd deployment,
+verification, and troubleshooting.
+
+## Documentation
+
+- [docs/SETUP.md](docs/SETUP.md) — installation and full regeneration
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — modules, delivery modes, casting ladder, constraints
+- [docs/API.md](docs/API.md) — authenticated app API (search, streams, casting, TVs, library)
+
 ## Deployment
 
 `deploy/` contains systemd units:
