@@ -6,6 +6,9 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.Executors
@@ -21,6 +24,17 @@ object AppLog {
 
     @Volatile
     private var logDir: File? = null
+
+    @Volatile
+    private var remoteBase: String? = null
+
+    @Volatile
+    private var remoteToken: String? = null
+
+    fun setRemote(baseUrl: String, token: String) {
+        remoteBase = baseUrl.trimEnd('/')
+        remoteToken = token
+    }
 
     fun init(context: Context) {
         logDir = File(context.filesDir, "logs").apply { mkdirs() }
@@ -111,13 +125,32 @@ object AppLog {
             "D" -> Log.d(TAG, "$tag $message")
             else -> Log.i(TAG, "$tag $message")
         }
-        val dir = logDir ?: return
-        executor.execute { append(dir, line) }
+        val dir = logDir
+        if (dir != null) executor.execute { append(dir, line) }
+        if (level == "E") executor.execute { postRemote(line) }
+    }
+
+    private fun postRemote(line: String) {
+        val base = remoteBase ?: return
+        val token = remoteToken ?: return
+        try {
+            val message = URLEncoder.encode(line.takeLast(1800), "UTF-8")
+            val url = URL("$base/api/app/client-log?level=E&tag=APP&message=$message")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Authorization", "Bearer $token")
+            connection.connectTimeout = 4000
+            connection.readTimeout = 4000
+            connection.responseCode
+            connection.disconnect()
+        } catch (_: Exception) {
+        }
     }
 
     private fun appendSync(level: String, tag: String, message: String) {
         val line = "${LocalDateTime.now().format(formatter)} $level/$tag ${redact(message)}"
         Log.e(TAG, "$tag $message")
+        postRemote(line)
         val dir = logDir ?: return
         append(dir, line)
     }

@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -148,10 +149,33 @@ STOP_WORDS = {
     "it", "its", "into", "find", "looking", "search", "suggestion", "suggestions",
 }
 
+SYNONYMS = {
+    "undead": ["zombie"],
+    "walker": ["zombie"],
+    "walkers": ["zombie"],
+    "zombies": ["zombie"],
+    "zombie": ["undead"],
+    "survival": ["post-apocalyptic", "apocalypse"],
+    "apocalypse": ["post-apocalyptic", "survival"],
+    "scary": ["horror"],
+    "funny": ["comedy"],
+    "romantic": ["romance"],
+    "heist": ["robbery", "thief"],
+    "robbery": ["heist"],
+    "spaceship": ["space", "sci-fi"],
+    "alien": ["sci-fi"],
+}
+
+
+def _fold(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[\u064b-\u065f\u0670\u0640]", "", text)
+
 
 def _query_tokens(text: str) -> list[str]:
     base = [
-        t for t in re.findall(r"[a-z0-9\u0600-\u06ff]+", text.lower())
+        t for t in re.findall(r"[a-z0-9\u0600-\u06ff]+", _fold(text))
         if len(t) >= 2 and t not in STOP_WORDS
     ]
     out: list[str] = []
@@ -159,77 +183,151 @@ def _query_tokens(text: str) -> list[str]:
         out.append(token)
         if len(token) > 4 and token.endswith("s"):
             out.append(token[:-1])
-    return out[:10]
+        out.extend(SYNONYMS.get(token, []))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for token in out:
+        if token not in seen:
+            seen.add(token)
+            unique.append(token)
+    return unique[:12]
 
 
-def keyword_search(text: str, media_type: str | None = None, k: int = 12) -> list[Group]:
+def _chunks(values: list, size: int):
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
+
+
+def _row_allowed(kind, year, rating, lang_value, genre_value, media_type,
+                 year_from, year_to, rating_min, lang, genre) -> bool:
+    if media_type and kind != media_type:
+        return False
+    if year_from and (year or 0) < year_from:
+        return False
+    if year_to and (year or 0) > year_to:
+        return False
+    if rating_min and float(rating or 0) < rating_min:
+        return False
+    if lang and (lang_value or "").upper() != lang.upper():
+        return False
+    if genre:
+        if kind == "movie" or genre.lower() not in (genre_value or "").lower():
+            return False
+    return True
+
+
+def keyword_search(text: str, media_type: str | None = None, k: int = 12,
+                   year_from: int = 0, year_to: int = 0, rating_min: float = 0.0,
+                   lang: str = "", genre: str = "") -> list[Group]:
     tokens = _query_tokens(text)
     if not tokens:
         return []
-    phrase = " ".join(text.lower().split())
+    phrase = " ".join(_fold(text).split())
     conn = store.connect()
-    rows: list[sqlite3.Row] = []
-    try:
-        if media_type != "series":
-            conds = " OR ".join("lower(title) LIKE ?" for _ in tokens)
-            rows += conn.execute(
-                f"SELECT 'movie' AS kind, stream_id AS ref_id, title, year, poster, rating, lang, "
-                f"ext, subs_lang, category_id, '' AS plot FROM movies WHERE {conds} "
-                f"ORDER BY rating DESC LIMIT 400",
-                [f"%{t}%" for t in tokens],
-            ).fetchall()
-        if media_type != "movie":
-            conds = " OR ".join(
-                "(lower(title) LIKE ? OR lower(native_title) LIKE ? OR lower(plot) LIKE ? OR lower(genre) LIKE ?)"
-                for _ in tokens
-            )
-            params: list[str] = []
-            for t in tokens:
-                params += [f"%{t}%"] * 4
-            rows += conn.execute(
-                f"SELECT 'series' AS kind, series_id AS ref_id, title, year, poster, rating, lang, "
-                f"'mkv' AS ext, NULL AS subs_lang, category_id, plot FROM series WHERE {conds} "
-                f"ORDER BY rating DESC LIMIT 400",
-                params,
-            ).fetchall()
-    finally:
-        conn.close()
-
     groups: dict[tuple, Group] = {}
     best: dict[tuple, float] = {}
-    for row in rows:
-        title = row["title"] or ""
-        lowered = title.lower()
-        score = 0.0
+
+    def add_row(kind, ref_id, title, year, poster, rating, row_lang, ext, subs, category, plot, fts_rank=0.0):
+        if not _row_allowed(kind, year, rating, row_lang, plot if kind == "series" else "",
+                            media_type, year_from, year_to, rating_min, lang, genre):
+            return
+        lowered = (title or "").lower()
+        score = max(0.0, -float(fts_rank)) * 0.05
         if lowered == phrase:
             score += 120
         elif phrase and phrase in lowered:
             score += 60
-        plot_l = (row["plot"] or "").lower()
-        for t in tokens:
-            if t in lowered:
-                score += 12
-            elif t in plot_l:
-                score += 4
-        score += float(row["rating"] or 0) * 2
-
-        key = (row["kind"], normalize_for_grouping(title), row["year"])
+        for token in tokens:
+            if token in lowered:
+                score += 10
+            elif kind == "series" and token in (plot or "").lower():
+                score += 3
+        score += float(rating or 0) * 2
+        key = (kind, normalize_for_grouping(title or ""), year)
         if key not in groups:
             groups[key] = Group(
-                row["kind"], key[1], title, "", row["year"], row["poster"] or "",
-                "" if row["kind"] == "movie" else (row["plot"] or "")[:400], score,
+                kind, key[1], title or "", "", year, poster or "",
+                "" if kind == "movie" else (plot or "")[:400], score,
             )
             best[key] = score
         elif score > best[key]:
             groups[key].best_score = score
             best[key] = score
-
         group = groups[key]
-        lang = row["lang"]
-        subs = row["subs_lang"]
-        if any(v.lang == lang and v.subs_lang == subs for v in group.variants):
-            continue
-        group.variants.append(
-            Variant(lang, row["ref_id"], row["ext"] or "mkv", row["rating"] or 0, row["category_id"], subs)
-        )
+        if any(v.lang == row_lang and v.subs_lang == subs for v in group.variants):
+            return
+        group.variants.append(Variant(row_lang, ref_id, ext or "mkv", rating or 0, category, subs))
+
+    try:
+        fts_rows = []
+        try:
+            match = " OR ".join(f'"{t}"' for t in tokens)
+            fts_rows = conn.execute(
+                "SELECT kind, ref_id, bm25(search_fts) AS rank FROM search_fts "
+                "WHERE search_fts MATCH ? ORDER BY rank LIMIT 600",
+                (match,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            fts_rows = []
+
+        if fts_rows:
+            ranks = {(r["kind"], r["ref_id"]): r["rank"] for r in fts_rows}
+            movie_ids = [r["ref_id"] for r in fts_rows if r["kind"] == "movie"]
+            series_ids = [r["ref_id"] for r in fts_rows if r["kind"] == "series"]
+            if movie_ids and not genre:
+                for chunk in _chunks(movie_ids, 800):
+                    q = (
+                        "SELECT stream_id, title, year, poster, rating, lang, ext, subs_lang, category_id "
+                        f"FROM movies WHERE stream_id IN ({','.join('?' * len(chunk))})"
+                    )
+                    for row in conn.execute(q, chunk):
+                        add_row(
+                            "movie", row["stream_id"], row["title"], row["year"], row["poster"],
+                            row["rating"], row["lang"], row["ext"], row["subs_lang"],
+                            row["category_id"], "", ranks.get(("movie", row["stream_id"]), 0.0),
+                        )
+            if series_ids:
+                for chunk in _chunks(series_ids, 800):
+                    q = (
+                        "SELECT series_id, title, year, poster, rating, lang, plot, genre, category_id "
+                        f"FROM series WHERE series_id IN ({','.join('?' * len(chunk))})"
+                    )
+                    for row in conn.execute(q, chunk):
+                        add_row(
+                            "series", row["series_id"], row["title"], row["year"], row["poster"],
+                            row["rating"], row["lang"], "mkv", None, row["category_id"],
+                            row["plot"] or "", ranks.get(("series", row["series_id"]), 0.0),
+                        )
+
+        if not groups:
+            like = " OR ".join("lower(title) LIKE ?" for _ in tokens)
+            params = [f"%{t}%" for t in tokens]
+            if not genre:
+                for row in conn.execute(
+                    f"SELECT stream_id, title, year, poster, rating, lang, ext, subs_lang, category_id "
+                    f"FROM movies WHERE {like} ORDER BY rating DESC LIMIT 400", params
+                ):
+                    add_row(
+                        "movie", row["stream_id"], row["title"], row["year"], row["poster"],
+                        row["rating"], row["lang"], row["ext"], row["subs_lang"],
+                        row["category_id"], "",
+                    )
+            like2 = " OR ".join(
+                "(lower(title) LIKE ? OR lower(native_title) LIKE ? OR lower(plot) LIKE ? OR lower(genre) LIKE ?)"
+                for _ in tokens
+            )
+            params2: list[str] = []
+            for token in tokens:
+                params2 += [f"%{token}%"] * 4
+            for row in conn.execute(
+                f"SELECT series_id, title, year, poster, rating, lang, plot, genre, category_id "
+                f"FROM series WHERE {like2} ORDER BY rating DESC LIMIT 400", params2
+            ):
+                add_row(
+                    "series", row["series_id"], row["title"], row["year"], row["poster"],
+                    row["rating"], row["lang"], "mkv", None, row["category_id"], row["plot"] or "",
+                )
+    finally:
+        conn.close()
+
     return sorted(groups.values(), key=lambda g: g.best_score, reverse=True)[:k]

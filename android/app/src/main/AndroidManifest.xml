@@ -27,7 +27,8 @@
 
         <activity
             android:name=".player.PlayerActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
             android:exported="false" />
 
         <meta-data

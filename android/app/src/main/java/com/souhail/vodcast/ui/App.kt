@@ -2,6 +2,7 @@ package com.souhail.vodcast.ui
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -94,15 +96,19 @@ import com.souhail.vodcast.cast.DlnaCaster
 import com.souhail.vodcast.cast.DlnaDevice
 import com.souhail.vodcast.data.Api
 import com.souhail.vodcast.data.CastMethod
+import com.souhail.vodcast.data.ContinueItem
 import com.souhail.vodcast.data.DiscoverResponse
 import com.souhail.vodcast.data.EpisodesResponse
 import com.souhail.vodcast.data.LibraryItem
 import com.souhail.vodcast.data.LibraryResponse
+import com.souhail.vodcast.data.QueueItem
+import com.souhail.vodcast.data.QueueResponse
 import com.souhail.vodcast.data.LiveCategory
 import com.souhail.vodcast.data.LiveChannel
 import com.souhail.vodcast.data.MediaGroup
 import com.souhail.vodcast.data.MediaVariant
 import com.souhail.vodcast.data.SessionInfo
+import com.souhail.vodcast.data.ProgressInfo
 import com.souhail.vodcast.data.Settings
 import com.souhail.vodcast.data.StatusInfo
 import com.souhail.vodcast.data.StreamInfo
@@ -128,7 +134,12 @@ sealed class Screen {
     data object Logs : Screen()
 }
 
-private data class PendingPlay(val mediaKey: String, val title: String, val isLive: Boolean = false)
+private data class PendingPlay(
+    val mediaKey: String,
+    val title: String,
+    val isLive: Boolean = false,
+    val startPosition: Double = 0.0,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -157,8 +168,22 @@ fun VodApp(settings: Settings) {
 
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var watchlist by remember { mutableStateOf<WatchlistResponse?>(null) }
+    var queue by remember { mutableStateOf<QueueResponse?>(null) }
     var libTab by remember { mutableStateOf(0) }
     var libLoading by remember { mutableStateOf(false) }
+    var continueItems by remember { mutableStateOf<List<ContinueItem>>(emptyList()) }
+    var filterRating by remember { mutableStateOf(0.0) }
+    var filterYearFrom by remember { mutableStateOf(0) }
+    var filterYearTo by remember { mutableStateOf(0) }
+    var filterLang by remember { mutableStateOf("") }
+
+    LaunchedEffect(api) {
+        api?.let {
+            runCatching { it.continueWatching() }
+                .onSuccess { resp -> continueItems = resp.items }
+                .onFailure { err -> AppLog.w("CONTINUE", err.message ?: "") }
+        }
+    }
 
     LaunchedEffect(toast) {
         toast?.let {
@@ -172,19 +197,50 @@ fun VodApp(settings: Settings) {
         AppLog.action("screen", screen::class.simpleName ?: "?")
     }
 
+    BackHandler(enabled = screen !is Screen.Setup && screen !is Screen.Discover) {
+        AppLog.action("back", screen::class.simpleName ?: "?")
+        screen = Screen.Discover
+    }
+
+    LaunchedEffect(Unit) {
+        if (settings.configured) AppLog.setRemote(settings.baseUrl, settings.token)
+    }
+
     fun runSearch(text: String = query, kind: String = contentType, category: Int = selectedCategory) {
         if (text.isBlank() && kind != "live") return
         scope.launch {
             searching = true
             searchError = null
-            AppLog.action("search", "type=$kind q=$text category=$category")
+            AppLog.action(
+                "search",
+                "type=$kind q=$text category=$category filters=$filterRating/$filterYearFrom/$filterYearTo/$filterLang",
+            )
             try {
                 if (kind == "live") {
                     liveResults = api!!.live(text, category)
                 } else {
-                    val result = api!!.discover(text, kind)
+                    val result = api!!.discover(
+                        text, kind, filterYearFrom, filterYearTo, filterRating, filterLang,
+                    )
                     discover = result
                     if (!result.ok) searchError = "search failed"
+                    searching = false
+                    scope.launch {
+                        try {
+                            val ai = api!!.discoverAi(
+                                text, kind, filterYearFrom, filterYearTo, filterRating, filterLang,
+                            )
+                            discover = discover?.copy(
+                                ai_picks = ai.ai_picks,
+                                ai_note = ai.ai_note,
+                                ai_pending = false,
+                            )
+                            AppLog.i("DISCOVER", "ai picks=${ai.ai_picks.size}")
+                        } catch (e: Exception) {
+                            AppLog.w("DISCOVER", "AI failed: ${e.message}")
+                            discover = discover?.copy(ai_pending = false, ai_note = "AI picks unavailable")
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 AppLog.e("SEARCH", "failed", e)
@@ -195,12 +251,18 @@ fun VodApp(settings: Settings) {
         }
     }
 
+    fun openContinue(item: ContinueItem) {
+        AppLog.action("continue", "${item.title} at ${item.position.toInt()}s")
+        pendingPlay = PendingPlay(item.media_key, item.title, false, item.position)
+    }
+
     fun loadLibrary() {
         scope.launch {
             libLoading = true
             try {
                 library = api!!.library()
                 watchlist = api!!.watchlist()
+                queue = api!!.queue()
             } catch (e: Exception) {
                 AppLog.e("LIBRARY", "load failed", e)
                 toast = e.message
@@ -377,6 +439,7 @@ fun VodApp(settings: Settings) {
                         settings.baseUrl = if (lanOk) lan else pub
                         settings.token = token
                         settings.usingLan = lanOk
+                        AppLog.setRemote(settings.baseUrl, token)
                         api = chosen
                         usingLan = lanOk
                         screen = Screen.Discover
@@ -414,6 +477,19 @@ fun VodApp(settings: Settings) {
                             AppLog.action("open_live", "${it.title} (${it.channel_id})")
                             pendingPlay = PendingPlay("live:${it.channel_id}", it.title, true)
                         },
+                        continueItems = continueItems,
+                        onContinue = { openContinue(it) },
+                        filterRating = filterRating,
+                        filterYearFrom = filterYearFrom,
+                        filterYearTo = filterYearTo,
+                        filterLang = filterLang,
+                        onFilters = { rating, yf, yt, lang ->
+                            filterRating = rating
+                            filterYearFrom = yf
+                            filterYearTo = yt
+                            filterLang = lang
+                            runSearch()
+                        },
                     )
                 }
 
@@ -421,7 +497,10 @@ fun VodApp(settings: Settings) {
                     DetailScreen(
                         group = current.group,
                         api = client,
-                        onPlay = { key, title -> pendingPlay = PendingPlay(key, title) },
+                        onPlay = { key, title, start ->
+                            pendingPlay = PendingPlay(key, title, false, start)
+                        },
+                        onOpen = { openGroup(it) },
                         notify = { toast = it },
                     )
                 }
@@ -433,6 +512,18 @@ fun VodApp(settings: Settings) {
                         loading = libLoading,
                         tab = libTab,
                         onTab = { libTab = it },
+                        queue = queue,
+                        onCancelQueue = { item ->
+                            scope.launch {
+                                try {
+                                    api!!.queueCancel(item.media_key)
+                                    toast = "Removed from queue"
+                                    loadLibrary()
+                                } catch (e: Exception) {
+                                    toast = e.message
+                                }
+                            }
+                        },
                         onRefresh = { loadLibrary() },
                         onPlay = { playLibrary(it) },
                         onCast = { castLibrary(it) },
@@ -604,8 +695,16 @@ private fun DiscoverScreen(
     onSuggestion: (String) -> Unit,
     onOpen: (MediaGroup) -> Unit,
     onOpenLive: (LiveChannel) -> Unit,
+    continueItems: List<ContinueItem>,
+    onContinue: (ContinueItem) -> Unit,
+    filterRating: Double,
+    filterYearFrom: Int,
+    filterYearTo: Int,
+    filterLang: String,
+    onFilters: (Double, Int, Int, String) -> Unit,
 ) {
     var categories by remember { mutableStateOf<List<LiveCategory>>(emptyList()) }
+    var showFilters by remember { mutableStateOf(false) }
 
     LaunchedEffect(contentType) {
         if (contentType == "live" && categories.isEmpty()) {
@@ -663,12 +762,51 @@ private fun DiscoverScreen(
                 }
             }
         }
+        item {
+            Row(
+                Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = filterRating > 0 || filterYearFrom > 0 || filterLang.isNotBlank(),
+                    onClick = { showFilters = true },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Filters")
+                        }
+                    },
+                )
+                val summary = buildList {
+                    if (filterRating > 0) add("★ ${filterRating.toInt()}+")
+                    if (filterYearFrom > 0) add("${filterYearFrom}+")
+                    if (filterToSummary(filterYearTo).isNotBlank()) add(filterToSummary(filterYearTo))
+                    if (filterLang.isNotBlank()) add(filterLang)
+                }.joinToString(" · ")
+                if (summary.isNotBlank()) {
+                    Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        if (query.isBlank() && continueItems.isNotEmpty()) {
+            item { SectionHeader("Continue watching", "Pick up where you left off.") }
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(continueItems) { item -> ContinueCard(item, onClick = { onContinue(item) }) }
+                }
+            }
+        }
         if (searching) {
             item {
                 Column(Modifier.padding(16.dp)) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Text(
-                        "Searching the catalog and asking the curator…",
+                        "Searching name and meaning instantly; the curator is next…",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp),
@@ -765,6 +903,22 @@ private fun DiscoverScreen(
                 }
             }
             if (data != null) {
+                if (data.ai_pending && data.ai_picks.isEmpty()) {
+                    item {
+                        Row(
+                            Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Curating AI picks…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
                 if (data.ai_picks.isNotEmpty()) {
                     item {
                         SectionHeader(
@@ -783,18 +937,137 @@ private fun DiscoverScreen(
                         }
                     }
                 }
-                if (data.by_name.isNotEmpty()) {
+                val aiTitles: Set<String> = data.ai_picks.map { group -> group.title.lowercase() }.toSet()
+                val byName: List<MediaGroup> = data.by_name.filter { group -> group.title.lowercase() !in aiTitles }
+                val byMeaning: List<MediaGroup> = data.by_meaning.filter { group -> group.title.lowercase() !in aiTitles }
+                if (byName.isNotEmpty()) {
                     item { SectionHeader("By name", "Titles that contain your words.") }
-                    items(data.by_name) { group -> GroupRow(group, onClick = { onOpen(group) }) }
+                    items(byName) { group -> GroupRow(group, onClick = { onOpen(group) }) }
                 }
-                if (data.by_meaning.isNotEmpty()) {
+                if (byMeaning.isNotEmpty()) {
                     item { SectionHeader("By meaning", "Close in theme and mood, even with different words.") }
-                    items(data.by_meaning) { group -> GroupRow(group, onClick = { onOpen(group) }) }
+                    items(byMeaning) { group -> GroupRow(group, onClick = { onOpen(group) }) }
                 }
                 if (data.ai_picks.isEmpty() && data.by_name.isEmpty() && data.by_meaning.isEmpty()) {
                     item { EmptyState("No matches", "Try a broader description or a different title.") }
                 }
             }
+        }
+    }
+    if (showFilters) {
+        FilterDialog(
+            rating = filterRating,
+            yearFrom = filterYearFrom,
+            yearTo = filterYearTo,
+            lang = filterLang,
+            onDismiss = { showFilters = false },
+            onApply = { rating, yf, yt, language ->
+                showFilters = false
+                onFilters(rating, yf, yt, language)
+            },
+        )
+    }
+}
+
+@Composable
+private fun FilterDialog(
+    rating: Double,
+    yearFrom: Int,
+    yearTo: Int,
+    lang: String,
+    onDismiss: () -> Unit,
+    onApply: (Double, Int, Int, String) -> Unit,
+) {
+    var r by remember { mutableStateOf(rating) }
+    var yf by remember { mutableStateOf(yearFrom) }
+    var language by remember { mutableStateOf(lang) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Filters") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Minimum rating", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(0.0 to "Any", 6.0 to "6+", 7.0 to "7+", 8.0 to "8+").forEach { (value, label) ->
+                        FilterChip(selected = r == value, onClick = { r = value }, label = { Text(label) })
+                    }
+                }
+                Text("From year", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(0 to "Any", 1990 to "1990", 2000 to "2000", 2010 to "2010", 2020 to "2020")
+                        .forEach { (value, label) ->
+                            FilterChip(selected = yf == value, onClick = { yf = value }, label = { Text(label) })
+                        }
+                }
+                Text("Language", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("" to "Any", "EN" to "EN", "FR" to "FR", "AR" to "AR", "IT" to "IT")
+                        .forEach { (value, label) ->
+                            FilterChip(
+                                selected = language == value,
+                                onClick = { language = value },
+                                label = { Text(label) },
+                            )
+                        }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onApply(r, yf, yearTo, language) }) { Text("Apply") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun filterToSummary(yearTo: Int): String = if (yearTo > 0) "≤$yearTo" else ""
+
+private fun formatTime(seconds: Double): String {
+    val total = seconds.toInt().coerceAtLeast(0)
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
+@Composable
+private fun ContinueCard(item: ContinueItem, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(150.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(8.dp),
+    ) {
+        PosterImage(
+            poster = item.poster,
+            modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(12.dp)),
+        )
+        Text(
+            item.title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        if (item.duration > 0) {
+            LinearProgressIndicator(
+                progress = { (item.position / item.duration).toFloat().coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(4.dp).clip(RoundedCornerShape(2.dp)),
+            )
+            Text(
+                "${formatTime(item.position)} / ${formatTime(item.duration)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        } else {
+            Text(
+                "Resume at ${formatTime(item.position)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }
@@ -958,12 +1231,15 @@ private fun EmptyState(title: String, message: String) {
 private fun DetailScreen(
     group: MediaGroup,
     api: Api,
-    onPlay: (String, String) -> Unit,
+    onPlay: (String, String, Double) -> Unit,
+    onOpen: (MediaGroup) -> Unit,
     notify: (String) -> Unit,
 ) {
     var episodes by remember { mutableStateOf<EpisodesResponse?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var added by remember { mutableStateOf(false) }
+    var resume by remember { mutableStateOf(0.0) }
+    var similar by remember { mutableStateOf<List<MediaGroup>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val seriesId = group.variants.firstOrNull()?.media_key?.removePrefix("series:")?.toIntOrNull()
 
@@ -974,6 +1250,11 @@ private fun DetailScreen(
             } catch (e: Exception) {
                 error = e.message
             }
+        }
+        val key = group.variants.firstOrNull()?.media_key
+        if (key != null) {
+            runCatching { api.progress(key) }.onSuccess { resume = it.position }
+            runCatching { api.similar(key) }.onSuccess { similar = it.items }
         }
     }
 
@@ -1019,7 +1300,7 @@ private fun DetailScreen(
                             return@Button
                         }
                         if (group.kind == "movie") {
-                            onPlay(key, group.title)
+                            onPlay(key, group.title, resume)
                         } else {
                             notify("Pick an episode below")
                         }
@@ -1027,7 +1308,13 @@ private fun DetailScreen(
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
-                    Text(if (group.kind == "series") "Pick an episode" else "Play")
+                    Text(
+                        when {
+                            group.kind == "series" -> "Pick an episode"
+                            resume > 30 -> "Resume ${formatTime(resume)}"
+                            else -> "Play"
+                        }
+                    )
                 }
                 OutlinedButton(
                     onClick = {
@@ -1080,14 +1367,20 @@ private fun DetailScreen(
                         headlineContent = { Text(ep.title ?: "Episode ${ep.episode}") },
                         supportingContent = { Text("E${ep.episode}" + (ep.ext?.let { " · $it" } ?: "")) },
                         trailingContent = {
-                            IconButton(
-                                onClick = { onPlay(ep.media_key, "${group.title} S${season}E${ep.episode}") }
-                            ) {
+                            IconButton(onClick = {
+                                scope.launch {
+                                    val p = runCatching { api.progress(ep.media_key) }.getOrNull()
+                                    onPlay(ep.media_key, "${group.title} S${season}E${ep.episode}", p?.position ?: 0.0)
+                                }
+                            }) {
                                 Icon(Icons.Default.PlayArrow, contentDescription = "Play")
                             }
                         },
                         modifier = Modifier.clickable {
-                            onPlay(ep.media_key, "${group.title} S${season}E${ep.episode}")
+                            scope.launch {
+                                val p = runCatching { api.progress(ep.media_key) }.getOrNull()
+                                onPlay(ep.media_key, "${group.title} S${season}E${ep.episode}", p?.position ?: 0.0)
+                            }
                         },
                     )
                 }
@@ -1100,12 +1393,23 @@ private fun DetailScreen(
                         headlineContent = { Text(variant.lang ?: "Original") },
                         supportingContent = { Text(variant.ext ?: "") },
                         trailingContent = {
-                            IconButton(onClick = { onPlay(variant.media_key, group.title) }) {
+                            IconButton(onClick = { onPlay(variant.media_key, group.title, resume) }) {
                                 Icon(Icons.Default.PlayArrow, contentDescription = "Play")
                             }
                         },
-                        modifier = Modifier.clickable { onPlay(variant.media_key, group.title) },
+                        modifier = Modifier.clickable { onPlay(variant.media_key, group.title, resume) },
                     )
+                }
+            }
+        }
+        if (similar.isNotEmpty()) {
+            item { SectionHeader("More like this", "Because you opened ${group.title}.") }
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(similar) { related -> AiPickCard(related, onClick = { onOpen(related) }) }
                 }
             }
         }
@@ -1128,6 +1432,8 @@ private fun LibraryScreen(
     loading: Boolean,
     tab: Int,
     onTab: (Int) -> Unit,
+    queue: QueueResponse?,
+    onCancelQueue: (QueueItem) -> Unit,
     onRefresh: () -> Unit,
     onPlay: (LibraryItem) -> Unit,
     onCast: (LibraryItem) -> Unit,
@@ -1145,16 +1451,36 @@ private fun LibraryScreen(
                 SegmentedButton(
                     selected = tab == 0,
                     onClick = { onTab(0) },
-                    shape = SegmentedButtonDefaults.itemShape(0, 2),
+                    shape = SegmentedButtonDefaults.itemShape(0, 3),
                 ) { Text("Downloads") }
                 SegmentedButton(
                     selected = tab == 1,
                     onClick = { onTab(1) },
-                    shape = SegmentedButtonDefaults.itemShape(1, 2),
+                    shape = SegmentedButtonDefaults.itemShape(1, 3),
                 ) { Text("Watchlist") }
+                SegmentedButton(
+                    selected = tab == 2,
+                    onClick = { onTab(2) },
+                    shape = SegmentedButtonDefaults.itemShape(2, 3),
+                ) { Text("Queue") }
             }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+            }
+        }
+        library?.let { lib ->
+            val usageGb = lib.usage_bytes / 1_000_000_000.0
+            val limitGb = lib.limit_bytes / 1_000_000_000.0
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Text(
+                    "Storage %.1f GB of %.0f GB".format(usageGb, limitGb),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LinearProgressIndicator(
+                    progress = { if (limitGb > 0) (usageGb / limitGb).toFloat().coerceIn(0f, 1f) else 0f },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(4.dp),
+                )
             }
         }
         if (loading) {
@@ -1203,7 +1529,7 @@ private fun LibraryScreen(
                     )
                 }
             }
-        } else {
+        } else if (tab == 1) {
             val items = watchlist?.items.orEmpty()
             if (items.isEmpty() && !loading) {
                 EmptyState(
@@ -1238,6 +1564,38 @@ private fun LibraryScreen(
                     )
                     HorizontalDivider(
                         Modifier.padding(start = 76.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                    )
+                }
+            }
+        } else {
+            val items = queue?.items.orEmpty()
+            if (items.isEmpty() && !loading) {
+                EmptyState(
+                    "Queue is empty",
+                    "Downloads queued from the watchlist appear here with their status.",
+                )
+            }
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(items) { item ->
+                    ListItem(
+                        headlineContent = {
+                            Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        },
+                        supportingContent = {
+                            Text(
+                                listOfNotNull(item.status, item.error?.takeIf { it.isNotBlank() })
+                                    .joinToString(" · ")
+                            )
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { onCancelQueue(item) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Cancel")
+                            }
+                        },
+                    )
+                    HorizontalDivider(
+                        Modifier.padding(start = 16.dp),
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
                     )
                 }
@@ -1324,7 +1682,19 @@ private fun TvScreen(
                             )
                         },
                         trailingContent = {
-                            TextButton(onClick = {
+                            Row {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        AppLog.action("wake", tv.name)
+                                        try {
+                                            val res = api.tvsWake(tv.name)
+                                            notify(if (res.ok) "Wake packet sent to ${tv.name}" else (res.error ?: "Wake failed"))
+                                        } catch (e: Exception) {
+                                            notify(e.message ?: "Wake failed")
+                                        }
+                                    }
+                                }) { Text("Wake") }
+                                TextButton(onClick = {
                                 scope.launch {
                                     AppLog.action("probe", tv.name)
                                     try {
@@ -1338,7 +1708,8 @@ private fun TvScreen(
                                         notify(e.message ?: "probe failed")
                                     }
                                 }
-                            }) { Text("Probe") }
+                                }) { Text("Probe") }
+                            }
                         },
                     )
                 }
@@ -1422,6 +1793,7 @@ private fun PlayDialog(
                         quality = effectiveQuality,
                         prepare = true,
                         format = if (target == "cast") "mp4" else null,
+                        startPosition = pending.startPosition,
                     )
                 }
                 if (!info.ok) {
@@ -1455,7 +1827,7 @@ private fun PlayDialog(
                     val result = if (pending.isLive) {
                         api.livePlay(pending.mediaKey.removePrefix("live:").toInt(), picked.name)
                     } else {
-                        api.play(pending.mediaKey, picked.name)
+                        api.play(pending.mediaKey, picked.name, pending.startPosition)
                     }
                     AppLog.action(
                         "server_cast",
@@ -1489,7 +1861,9 @@ private fun PlayDialog(
                 context.startActivity(
                     Intent(context, PlayerActivity::class.java)
                         .putExtra("url", url)
-                        .putExtra("title", pending.title),
+                        .putExtra("title", pending.title)
+                        .putExtra("start_offset", pending.startPosition)
+                        .putExtra("media_key", pending.mediaKey),
                 )
                 onStart(stream, null, pending.title)
             }

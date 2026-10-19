@@ -34,11 +34,19 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| GET | `/api/app/health` | – | `{ok, version, tvs, library, queue}` |
+| GET | `/api/app/health` | – | provider/sessions/library/uptime + counts |
 | GET | `/api/app/whoami` | – | `{ok:true}` (token check) |
 | GET | `/api/app/config` | – | `{ok, version, lan_ip, public_base, has_public, server_name}` |
 | GET | `/api/app/search` | `q`, `type=movie\|series\|live` | array of groups with `variants[].media_key` |
-| GET | `/api/app/discover` | `q`, `kind=movie\|series\|live` (optional) | `{ok, query, ai_note, ai_picks:[group+reason], by_name:[group], by_meaning:[group]}` |
+| GET | `/api/app/discover` | `q`, `kind`, `year_from`, `year_to`, `rating_min`, `lang`, `genre` | fast groups: `{by_name, by_meaning, ai_pending:true}` |
+| GET | `/api/app/discover/ai` | same filters | `{ai_note, ai_picks:[group+reason]}` (LLM, cached 10 min) |
+| GET | `/api/app/similar` | `media_key` | `{title, items:[group]}` |
+| GET | `/api/app/continue` | – | `{items:[{media_key,title,poster,position,duration}]}` |
+| GET/POST | `/api/app/progress` | `media_key` (+ `position`,`duration` POST) | `{position,duration}` |
+| GET | `/api/app/events` | `since` | `{items:[{id,ts,kind,title,body}]}` |
+| GET/POST/DELETE | `/api/app/tokens` | `label` / `token` | per-device tokens |
+| POST | `/api/app/client-log` | `level`,`tag`,`message` | self-hosted app error sink |
+| GET | `/metrics` | – | Prometheus text (requests, sessions, library, provider) |
 | GET | `/api/app/episodes` | `series_id` | `{episodes:{season:[…]}, items:{season:[{episode,title,media_key,ext,duration}]}, series_id}` |
 | GET | `/api/app/live` | `q` (optional), `category_id` (optional) | array of `{kind:"live", channel_id, title, category_id, icon}` |
 | GET | `/api/app/live/categories` | – | `[{id, name, count}]` |

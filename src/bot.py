@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import uuid
@@ -36,6 +37,8 @@ from .caster import cast, get_position, playback_state, probe_duration, seek, st
 
 logger = logging.getLogger("vod-delivery")
 _DISCOVER_CACHE: dict[str, tuple[float, dict]] = {}
+_DISCOVER_AI_CACHE: dict[str, tuple[float, dict]] = {}
+_STARTED_AT = time.time()
 
 
 async def _resolve_media_key(media_key: str) -> dict | None:
@@ -2707,91 +2710,232 @@ async def main() -> None:
             ],
         }
 
-    async def api_discover(q: str, kind: str = "") -> dict:
-        query = (q or "").strip()
-        if not query:
-            return {"ok": False, "error": "query required", "ai_picks": [], "by_name": [], "by_meaning": []}
-        cache_key = f"{query.lower()}|{kind}"
-        now = time.time()
-        cached = _DISCOVER_CACHE.get(cache_key)
-        if cached and now - cached[0] < 600:
-            return cached[1]
+    def _filter_groups(groups, year_from, year_to, rating_min, lang):
+        out = []
+        for g in groups:
+            if year_from and (g.year or 0) < year_from:
+                continue
+            if year_to and (g.year or 0) > year_to:
+                continue
+            if rating_min and (max((v.rating or 0) for v in g.variants) if g.variants else 0) < rating_min:
+                continue
+            if lang and not any((v.lang or "").upper() == lang.upper() for v in g.variants):
+                continue
+            out.append(g)
+        return out
 
-        groups = await asyncio.to_thread(search_media, {"title": query, "media_type": kind or None}, 12)
-        by_meaning = [_group_json(g) for g in groups]
-        keyword_groups = await asyncio.to_thread(keyword_search, query, kind or None, 12)
-        by_name = [_group_json(g) for g in keyword_groups]
+    async def _discover_fast(q: str, kind: str = "", year_from: int = 0, year_to: int = 0,
+                             rating_min: float = 0.0, lang: str = "", genre: str = ""):
+        key = json.dumps([q.lower().strip(), kind, year_from, year_to, rating_min, lang, genre])
+        now = time.time()
+        cached = _DISCOVER_CACHE.get(key)
+        if cached and now - cached[0] < 600:
+            return key, cached[1]
+
+        groups = await asyncio.to_thread(
+            search_media, {"title": q, "media_type": kind or None, "language": lang or None}, 12
+        )
+        groups = _filter_groups(groups, year_from, year_to, rating_min, lang)
+        keyword_groups = await asyncio.to_thread(
+            keyword_search, q, kind or None, 12, year_from, year_to, rating_min, lang, genre
+        )
 
         merged: list[Group] = []
         seen: set = set()
         for g in list(groups) + list(keyword_groups):
-            key = (g.kind, normalize_for_grouping(g.title), g.year)
-            if key in seen:
+            k = (g.kind, normalize_for_grouping(g.title), g.year)
+            if k in seen:
                 continue
-            seen.add(key)
+            seen.add(k)
             merged.append(g)
-        merged = merged[:16]
+        pick_keys = {(g.kind, normalize_for_grouping(g.title), g.year) for g in merged[:1]}
+        data = {
+            "ok": True, "query": q, "ai_pending": bool(merged), "ai_note": "", "ai_picks": [],
+            "by_name": [_group_json(g) for g in keyword_groups],
+            "by_meaning": [_group_json(g) for g in groups],
+        }
+        _DISCOVER_CACHE[key] = (now, data)
+        return key, data
 
-        candidates = [
-            {
-                "title": g.title, "year": g.year, "kind": g.kind,
-                "rating": max((v.rating or 0) for v in g.variants) if g.variants else 0,
-                "plot": g.plot[:140],
-            }
-            for g in merged
-        ]
-        llm_result = await llm_suggest(query, candidates) if merged else None
+    async def api_discover(q: str, kind: str = "", year_from: int = 0, year_to: int = 0,
+                           rating_min: float = 0.0, lang: str = "", genre: str = "") -> dict:
+        query = (q or "").strip()
+        if not query:
+            return {"ok": False, "error": "query required", "ai_picks": [], "by_name": [], "by_meaning": []}
+        _, data = await _discover_fast(query, kind, year_from, year_to, rating_min, lang, genre)
+        return data
+
+    async def api_discover_ai(q: str, kind: str = "", year_from: int = 0, year_to: int = 0,
+                              rating_min: float = 0.0, lang: str = "", genre: str = "") -> dict:
+        query = (q or "").strip()
+        if not query:
+            return {"ok": False, "error": "query required", "ai_picks": [], "ai_note": ""}
+        key, data = await _discover_fast(query, kind, year_from, year_to, rating_min, lang, genre)
+        now = time.time()
+        cached = _DISCOVER_AI_CACHE.get(key)
+        if cached and now - cached[0] < 600:
+            return cached[1]
+
+        pool = list(data.get("by_meaning") or []) + list(data.get("by_name") or [])
+        candidates: list[dict] = []
+        seen: set = set()
+        for item in pool:
+            k = (item["kind"], normalize_for_grouping(item["title"]), item["year"])
+            if k in seen:
+                continue
+            seen.add(k)
+            candidates.append({
+                "title": item["title"], "year": item["year"], "kind": item["kind"],
+                "rating": item.get("rating") or 0, "plot": (item.get("plot") or "")[:140],
+            })
+        candidates = candidates[:12]
+        llm_result = await llm_suggest(query, candidates) if candidates else None
         note = ""
-        picks_raw: list[dict] = []
+        picks: list[dict] = []
         if llm_result:
             note = str(llm_result.get("note") or "").strip()
-            for pick in (llm_result.get("picks") or [])[:6]:
+            for pick in (llm_result.get("picks") or [])[:5]:
                 if not isinstance(pick, dict):
                     continue
                 title = str(pick.get("title") or "").strip()
                 if not title:
                     continue
                 low = re.sub(r"\s*\(\d{4}\)\s*$", "", title).lower()
-                match = next((g for g in merged if g.title.lower() == low), None)
+                match = next((x for x in pool if x["title"].lower() == low), None)
                 if match is None:
                     match = next(
-                        (g for g in merged if low in g.title.lower() or g.title.lower() in low), None
+                        (x for x in pool if low in x["title"].lower() or x["title"].lower() in low), None
                     )
                 if match is None:
                     continue
-                item = _group_json(match)
+                item = dict(match)
                 item["reason"] = str(pick.get("reason") or "").strip()[:160]
-                picks_raw.append(item)
-
-        if not picks_raw:
-            ranked = sorted(
-                merged,
-                key=lambda g: (
-                    max((v.rating or 0) for v in g.variants) if g.variants else 0,
-                    g.best_score,
-                ),
-                reverse=True,
-            )[:6]
-            picks_raw = [{**_group_json(g), "reason": "Top-rated match"} for g in ranked]
+                picks.append(item)
+        if not picks:
+            ranked = sorted(pool, key=lambda x: (x.get("rating") or 0, x.get("score") or 0), reverse=True)[:6]
+            picks = [{**x, "reason": "Top-rated match"} for x in ranked]
             note = note or "AI picks unavailable — showing top-rated matches."
-
-        pick_keys = {
-            (item["kind"], normalize_for_grouping(item["title"]), item["year"]) for item in picks_raw
-        }
-        by_name = [
-            x for x in by_name
-            if (x["kind"], normalize_for_grouping(x["title"]), x["year"]) not in pick_keys
-        ]
-        by_meaning = [
-            x for x in by_meaning
-            if (x["kind"], normalize_for_grouping(x["title"]), x["year"]) not in pick_keys
-        ]
-        result = {
-            "ok": True, "query": query, "ai_note": note, "ai_picks": picks_raw,
-            "by_name": by_name, "by_meaning": by_meaning,
-        }
-        _DISCOVER_CACHE[cache_key] = (now, result)
+        result = {"ok": True, "query": query, "ai_note": note, "ai_picks": picks}
+        _DISCOVER_AI_CACHE[key] = (now, result)
         return result
+
+    async def api_similar(media_key: str) -> dict:
+        payload = await _resolve_media_key(media_key)
+        if not payload:
+            return {"ok": False, "error": "unknown media key", "items": []}
+        title = payload.get("title") or ""
+        groups = await asyncio.to_thread(
+            search_media, {"title": title, "media_type": payload.get("kind")}, 12
+        )
+        target = normalize_for_grouping(title)
+        items = [_group_json(g) for g in groups if normalize_for_grouping(g.title) != target][:10]
+        return {"ok": True, "title": title, "items": items}
+
+    async def api_continue() -> dict:
+        conn = store.connect()
+        try:
+            rows = store.continue_watching(conn, library.owner_chat_id() or 0, 12)
+            out = []
+            for r in rows:
+                key = r["media_key"]
+                kind, _, ref = key.partition(":")
+                title = poster = None
+                year = None
+                if kind == "movie" and ref.isdigit():
+                    m = conn.execute(
+                        "SELECT title, year, poster FROM movies WHERE stream_id=?", (int(ref),)
+                    ).fetchone()
+                    if m:
+                        title, year, poster = m["title"], m["year"], m["poster"]
+                elif kind == "episode":
+                    ep, _, sid = ref.partition(":")
+                    if sid.isdigit():
+                        s = conn.execute(
+                            "SELECT title, poster FROM series WHERE series_id=?", (int(sid),)
+                        ).fetchone()
+                        if s:
+                            title, poster = s["title"], s["poster"]
+                    e = conn.execute(
+                        "SELECT season, episode FROM episodes WHERE episode_id=?", (int(ep),)
+                    ).fetchone() if ep.isdigit() else None
+                    if e:
+                        title = f"{title or 'Episode'} S{e['season']}E{e['episode']}"
+                if not title:
+                    continue
+                out.append({
+                    "media_key": key, "kind": kind, "title": title, "poster": poster, "year": year,
+                    "position": round(r["position_s"], 1), "duration": round(r["duration_s"], 1),
+                    "updated_at": r["updated_at"],
+                })
+            return {"ok": True, "items": out}
+        finally:
+            conn.close()
+
+    async def api_progress(media_key: str) -> dict:
+        conn = store.connect()
+        row = store.get_progress(conn, library.owner_chat_id() or 0, media_key)
+        conn.close()
+        return {
+            "ok": True,
+            "position": round(row["position_s"], 1) if row else 0.0,
+            "duration": round(row["duration_s"], 1) if row else 0.0,
+        }
+
+    async def api_set_progress(media_key: str, position: float, duration: float = 0.0) -> dict:
+        conn = store.connect()
+        store.set_progress(conn, library.owner_chat_id() or 0, media_key, float(position), float(duration))
+        conn.close()
+        return {"ok": True}
+
+    async def api_health() -> dict:
+        conn = store.connect()
+        lib_bytes = store.library_size_bytes(conn)
+        ev = conn.execute("SELECT COUNT(*) AS c FROM events").fetchone()["c"]
+        conn.close()
+        return {
+            "ok": True, "provider": provider_health(), "sessions": len(proxy._sessions),
+            "library_bytes": lib_bytes, "cache_bytes": library.cache_usage_bytes(),
+            "events": ev, "uptime_s": int(time.time() - _STARTED_AT),
+        }
+
+    async def api_events(since: int = 0) -> dict:
+        conn = store.connect()
+        rows = store.list_events(conn, int(since), 50)
+        conn.close()
+        return {"ok": True, "items": [dict(r) for r in rows]}
+
+    async def api_client_log(level: str, tag: str, message: str) -> dict:
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "level": (level or "I")[:8],
+            "tag": (tag or "")[:40], "message": (message or "")[:2000],
+        }
+        try:
+            Path("data/client_logs.jsonl").parent.mkdir(parents=True, exist_ok=True)
+            with open("data/client_logs.jsonl", "a") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except Exception:
+            logger.debug("client log write failed", exc_info=True)
+        return {"ok": True}
+
+    async def api_tokens_create(label: str = "") -> dict:
+        import secrets
+        token = secrets.token_urlsafe(24)
+        conn = store.connect()
+        store.create_app_token(conn, token, label)
+        conn.close()
+        return {"ok": True, "token": token, "label": label}
+
+    async def api_tokens_list() -> dict:
+        conn = store.connect()
+        rows = store.list_app_tokens(conn)
+        conn.close()
+        return {"ok": True, "items": [dict(r) for r in rows]}
+
+    async def api_tokens_revoke(token: str) -> dict:
+        conn = store.connect()
+        store.revoke_app_token(conn, token)
+        conn.close()
+        return {"ok": True}
 
     async def api_search(q: str, kind: str) -> list:
         if kind == "live":
@@ -3393,7 +3537,11 @@ async def main() -> None:
              app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control,
              app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
              live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream,
-             discover=api_discover, library_stream=api_library_stream)
+             discover=api_discover, discover_ai=api_discover_ai, similar=api_similar,
+             continue_watching=api_continue, progress=api_progress, set_progress=api_set_progress,
+             health=api_health, events=api_events, client_log=api_client_log,
+             tokens_create=api_tokens_create, tokens_list=api_tokens_list,
+             tokens_revoke=api_tokens_revoke, library_stream=api_library_stream)
 
     @dp.message(Command("audit"))
     async def cmd_audit(message: Message) -> None:

@@ -150,6 +150,23 @@ CREATE TABLE IF NOT EXISTS plays (
     completed INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_plays_user ON plays(user_id, started_at DESC);
+CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
+    title, plot, genre, kind UNINDEXED, ref_id UNINDEXED,
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT,
+    kind TEXT,
+    title TEXT,
+    body TEXT
+);
+CREATE TABLE IF NOT EXISTS app_tokens (
+    token TEXT PRIMARY KEY,
+    label TEXT,
+    created_at TEXT,
+    last_seen TEXT
+);
 CREATE TABLE IF NOT EXISTS watch_progress (
     user_id INTEGER,
     media_key TEXT,
@@ -196,6 +213,11 @@ def connect() -> sqlite3.Connection:
     ):
         if col not in lib_cols:
             conn.execute(f"ALTER TABLE library ADD COLUMN {col} {ddl}")
+    try:
+        if conn.execute("SELECT COUNT(*) AS c FROM search_fts").fetchone()["c"] == 0:
+            rebuild_search_fts(conn)
+    except sqlite3.OperationalError:
+        pass
     tv_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tvs)")}
     for col in ("kind", "downgrade", "ignored", "v2_seek", "virtual_channel"):
         if col not in tv_cols:
@@ -501,4 +523,59 @@ def list_queue(conn: sqlite3.Connection):
 
 def remove_queue_item(conn: sqlite3.Connection, media_key: str) -> None:
     conn.execute("DELETE FROM download_queue WHERE media_key=?", (media_key,))
+    conn.commit()
+
+
+def rebuild_search_fts(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM search_fts")
+    conn.execute(
+        "INSERT INTO search_fts(title, plot, genre, kind, ref_id) "
+        "SELECT title, '', '', 'movie', stream_id FROM movies"
+    )
+    conn.execute(
+        "INSERT INTO search_fts(title, plot, genre, kind, ref_id) "
+        "SELECT title, COALESCE(plot,''), COALESCE(genre,''), 'series', series_id FROM series"
+    )
+    conn.commit()
+
+
+def add_event(conn: sqlite3.Connection, kind: str, title: str, body: str = "") -> None:
+    conn.execute(
+        "INSERT INTO events(ts, kind, title, body) VALUES(?,?,?,?)",
+        (_now(), kind, title, body),
+    )
+    conn.commit()
+
+
+def list_events(conn: sqlite3.Connection, since: int = 0, limit: int = 50) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?", (since, limit)
+    ).fetchall()
+
+
+def create_app_token(conn: sqlite3.Connection, token: str, label: str = "") -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO app_tokens(token, label, created_at) VALUES(?,?,?)",
+        (token, label, _now()),
+    )
+    conn.commit()
+
+
+def valid_app_token(conn: sqlite3.Connection, token: str) -> bool:
+    row = conn.execute("SELECT token FROM app_tokens WHERE token=?", (token,)).fetchone()
+    if row is None:
+        return False
+    conn.execute("UPDATE app_tokens SET last_seen=? WHERE token=?", (_now(), token))
+    conn.commit()
+    return True
+
+
+def list_app_tokens(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT token, label, created_at, last_seen FROM app_tokens ORDER BY created_at DESC"
+    ).fetchall()
+
+
+def revoke_app_token(conn: sqlite3.Connection, token: str) -> None:
+    conn.execute("DELETE FROM app_tokens WHERE token=?", (token,))
     conn.commit()

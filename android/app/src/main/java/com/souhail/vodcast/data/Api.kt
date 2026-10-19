@@ -27,7 +27,8 @@ class Api(private val baseUrl: String, private val token: String) {
         return builder.build()
     }
 
-    private suspend fun exec(path: String, params: Map<String, String> = emptyMap(), post: Boolean = false): String =
+    private suspend fun exec(path: String, params: Map<String, String> = emptyMap(), post: Boolean = false,
+                             log: Boolean = true): String =
         withContext(Dispatchers.IO) {
             val httpUrl = url(path, params)
             val display = AppLog.redact(
@@ -45,16 +46,18 @@ class Api(private val baseUrl: String, private val token: String) {
                 client.newCall(req).execute().use { resp ->
                     val body = resp.body?.string() ?: ""
                     val millis = (System.nanoTime() - started) / 1_000_000
-                    AppLog.api(
-                        method, display, resp.code, millis, body.length.toLong(),
-                        if (resp.isSuccessful) null else body.take(160),
-                    )
+                    if (log) {
+                        AppLog.api(
+                            method, display, resp.code, millis, body.length.toLong(),
+                            if (resp.isSuccessful) null else body.take(160),
+                        )
+                    }
                     logged = true
                     if (!resp.isSuccessful) error("HTTP ${resp.code}: ${body.take(240)}")
                     body
                 }
             } catch (e: Exception) {
-                if (!logged) {
+                if (!logged && log) {
                     val millis = (System.nanoTime() - started) / 1_000_000
                     AppLog.api(method, display, 0, millis, 0, "${e.javaClass.simpleName}: ${e.message}")
                 }
@@ -140,8 +143,82 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun status(): StatusInfo = json.decodeFromString(exec("api/app/status"))
 
-    suspend fun discover(q: String, kind: String = ""): DiscoverResponse =
-        json.decodeFromString(exec("api/app/discover", mapOf("q" to q, "kind" to kind)))
+    suspend fun discover(
+        q: String,
+        kind: String = "",
+        yearFrom: Int = 0,
+        yearTo: Int = 0,
+        ratingMin: Double = 0.0,
+        language: String = "",
+        genre: String = "",
+    ): DiscoverResponse =
+        json.decodeFromString(
+            exec(
+                "api/app/discover",
+                mapOf(
+                    "q" to q, "kind" to kind,
+                    "year_from" to yearFrom.toString(), "year_to" to yearTo.toString(),
+                    "rating_min" to ratingMin.toString(), "lang" to language, "genre" to genre,
+                ),
+            )
+        )
+
+    suspend fun discoverAi(
+        q: String,
+        kind: String = "",
+        yearFrom: Int = 0,
+        yearTo: Int = 0,
+        ratingMin: Double = 0.0,
+        language: String = "",
+        genre: String = "",
+    ): DiscoverAiResponse =
+        json.decodeFromString(
+            exec(
+                "api/app/discover/ai",
+                mapOf(
+                    "q" to q, "kind" to kind,
+                    "year_from" to yearFrom.toString(), "year_to" to yearTo.toString(),
+                    "rating_min" to ratingMin.toString(), "lang" to language, "genre" to genre,
+                ),
+            )
+        )
+
+    suspend fun similar(mediaKey: String): SimilarResponse =
+        json.decodeFromString(exec("api/app/similar", mapOf("media_key" to mediaKey)))
+
+    suspend fun continueWatching(): ContinueResponse =
+        json.decodeFromString(exec("api/app/continue"))
+
+    suspend fun progress(mediaKey: String): ProgressInfo =
+        json.decodeFromString(exec("api/app/progress", mapOf("media_key" to mediaKey)))
+
+    suspend fun saveProgress(mediaKey: String, position: Double, duration: Double): ControlResult =
+        json.decodeFromString(
+            exec(
+                "api/app/progress",
+                mapOf("media_key" to mediaKey, "position" to position.toString(), "duration" to duration.toString()),
+                post = true,
+                log = false,
+            )
+        )
+
+    suspend fun queue(): QueueResponse = json.decodeFromString(exec("api/app/queue"))
+
+    suspend fun queueCancel(mediaKey: String): ControlResult =
+        json.decodeFromString(exec("api/app/queue/cancel", mapOf("media_key" to mediaKey), post = true))
+
+    suspend fun tvsWake(name: String): ControlResult =
+        json.decodeFromString(exec("api/app/tvs/wake", mapOf("name" to name), post = true))
+
+    suspend fun clientLog(level: String, tag: String, message: String): ControlResult =
+        json.decodeFromString(
+            exec(
+                "api/app/client-log",
+                mapOf("level" to level, "tag" to tag, "message" to message),
+                post = true,
+                log = false,
+            )
+        )
 
     suspend fun library(): LibraryResponse =
         json.decodeFromString(exec("api/app/library"))

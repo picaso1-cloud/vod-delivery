@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 
+from . import store
 from .config import LLM_BASE_URL, LLM_MODEL
 
 logger = logging.getLogger("vod-delivery")
@@ -112,6 +113,12 @@ def _extract_events(raw: str) -> list[dict]:
     events = []
     for line in raw.splitlines():
         if not line or "httpx" in line or "huggingface" in line or "aiohttp.access" in line:
+            continue
+        if any(noise in line for noise in (
+            "ClientConnectionResetError", "Cannot write to closing transport",
+            "BrokenPipeError", "ConnectionResetError", "SocketTimeoutException",
+            "child process pid", "exit status already read", "Keystore",
+        )):
             continue
         m = re.match(r"^(\S+ \S+) (\S+) (\S+): (.*)", line)
         if not m:
@@ -259,6 +266,17 @@ def _note_finding(findings: list[dict]) -> list[dict]:
         recurrence[h] = {"c": 1, "last": time.strftime("%Y-%m-%d %H:%M:%S")}
         f = {**f, "hash": h, "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
         fresh.append(f)
+    for f in fresh:
+        if str(f.get("severity", "")).lower() == "high":
+            try:
+                conn = store.connect()
+                store.add_event(
+                    conn, "audit", str(f.get("feature") or "audit"),
+                    str(f.get("observation") or "")[:300],
+                )
+                conn.close()
+            except Exception:
+                logger.debug("audit event write failed", exc_info=True)
     state["recent_hashes"] = recent
     state["recurrence"] = recurrence
     AUDIT_DIR.mkdir(parents=True, exist_ok=True)

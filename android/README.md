@@ -4,7 +4,7 @@ Native Kotlin/Compose client for the VOD-delivery service. It searches the
 catalog through the app API, prepares a signed stream link, and casts it to a
 DLNA TV, a Chromecast, or plays it locally.
 
-**Status:** P1 — verified on a Samsung SM-F946B (Android 13): launch, connect,
+**Status:** P2 — verified on a Samsung SM-F946B (Android 13): launch, connect, async AI search,
 Discover (AI picks + by-name + by-meaning), Live TV, library playback, TV list,
 stream preparation (~3 s), and on-device playback with video + audio. DLNA and
 Cast TVs (server-side SCS) work; the UI uses a dark cinematic theme with bottom
@@ -160,3 +160,16 @@ the top bar) with **Refresh / Share / Clear**.
   (verified with a 403 channel); the app shows that error instead of a dead URL.
 - Live responses are **chunked** (no fake `Content-Length`); a fake 2 GB length
   made ExoPlayer's second connection wait 8 s for headers and time out.
+
+## Search & app features
+
+- **Async discover**: `by_name` / `by_meaning` render in <1 s (server ~0.2 s), AI picks arrive
+  in a second call and are cached 10 min.
+- **Filters**: minimum rating, from-year, language — applied server-side.
+- **Continue watching** row with progress bars; resume position is passed to the player.
+- **Detail**: "More like this" (similar titles), Watchlist add, version picker.
+- **Library**: Downloads / Watchlist / Queue tabs, storage usage vs limit, cancel queue.
+- **Player**: resume, speed (0.75–2×), audio/subtitle picker, PiP, 30-min sleep timer,
+  progress saved every 10 s and on pause/stop.
+- **Ops**: per-device app tokens, Prometheus `/metrics`, events feed,
+  and a self-hosted client-log sink (`data/client_logs.jsonl`) for app errors.

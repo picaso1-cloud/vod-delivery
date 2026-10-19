@@ -298,6 +298,10 @@ def register_download(media_key: str, kind: str, ref_id: int, title: str, rel: P
             retrieved_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
             content_hash=_file_hash(full),
         )
+        store.add_event(
+            conn, "download", title,
+            f"{title} is ready ({size_bytes // 1_048_576} MB)",
+        )
     finally:
         conn.close()
 

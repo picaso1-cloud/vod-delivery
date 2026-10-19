@@ -168,6 +168,7 @@ data class StatusInfo(
 data class DiscoverResponse(
     val ok: Boolean = false,
     val query: String = "",
+    val ai_pending: Boolean = false,
     val ai_note: String = "",
     val ai_picks: List<MediaGroup> = emptyList(),
     val by_name: List<MediaGroup> = emptyList(),
@@ -192,6 +193,7 @@ data class LibraryResponse(
     val ok: Boolean = false,
     val items: List<LibraryItem> = emptyList(),
     val usage_bytes: Long = 0,
+    val limit_bytes: Long = 0,
 )
 
 @Serializable
@@ -207,4 +209,58 @@ data class WatchlistItem(
 data class WatchlistResponse(
     val ok: Boolean = false,
     val items: List<WatchlistItem> = emptyList(),
+)
+
+@Serializable
+data class ContinueItem(
+    val media_key: String = "",
+    val kind: String = "",
+    val title: String = "",
+    val poster: String? = null,
+    val year: Int? = null,
+    val position: Double = 0.0,
+    val duration: Double = 0.0,
+    val updated_at: String? = null,
+)
+
+@Serializable
+data class ContinueResponse(
+    val ok: Boolean = false,
+    val items: List<ContinueItem> = emptyList(),
+)
+
+@Serializable
+data class ProgressInfo(
+    val ok: Boolean = false,
+    val position: Double = 0.0,
+    val duration: Double = 0.0,
+)
+
+@Serializable
+data class SimilarResponse(
+    val ok: Boolean = false,
+    val title: String = "",
+    val items: List<MediaGroup> = emptyList(),
+)
+
+@Serializable
+data class DiscoverAiResponse(
+    val ok: Boolean = false,
+    val query: String = "",
+    val ai_note: String = "",
+    val ai_picks: List<MediaGroup> = emptyList(),
+)
+
+@Serializable
+data class QueueItem(
+    val media_key: String = "",
+    val title: String = "",
+    val status: String = "",
+    val error: String? = null,
+)
+
+@Serializable
+data class QueueResponse(
+    val ok: Boolean = false,
+    val items: List<QueueItem> = emptyList(),
 )

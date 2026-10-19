@@ -1,10 +1,11 @@
 import asyncio
 import secrets
 import threading
+import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from . import store
@@ -18,7 +19,60 @@ WEB_PORT = 8095
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "web_templates"))
 
 app = FastAPI(title="VOD-Delivery", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def _rate_and_metrics(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        ip = request.client.host if request.client else "?"
+        now = time.time()
+        with _RATE_LOCK:
+            hits = [t for t in _RATE.get(ip, []) if now - t < 60.0]
+            if len(hits) >= 180:
+                return JSONResponse({"detail": "rate limited"}, status_code=429)
+            hits.append(now)
+            _RATE[ip] = hits
+    _METRICS["requests"] += 1
+    response = await call_next(request)
+    code = str(response.status_code)
+    _METRICS["status"][code] = _METRICS["status"].get(code, 0) + 1
+    return response
+
+
+@app.get("/metrics")
+async def metrics():
+    lines = [f"vod_http_requests_total {_METRICS['requests']}"]
+    for code, count in sorted(_METRICS["status"].items()):
+        lines.append(f'vod_http_responses_total{{code="{code}"}} {count}')
+    try:
+        from . import proxy as _proxy
+
+        sessions = len(_proxy._sessions)
+    except Exception:
+        sessions = 0
+    try:
+        from .provider import health as _provider_health
+
+        provider_down = 1 if _provider_health().get("down") else 0
+    except Exception:
+        provider_down = 0
+    conn = store.connect()
+    try:
+        lib_bytes = store.library_size_bytes(conn)
+    finally:
+        conn.close()
+    lines += [
+        f"vod_stream_sessions {sessions}",
+        f"vod_library_bytes {lib_bytes}",
+        f"vod_provider_down {provider_down}",
+        f"vod_uptime_seconds {int(time.time() - _WEB_STARTED)}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
 _sessions: set[str] = set()
+_WEB_STARTED = time.time()
+_RATE_LOCK = threading.Lock()
+_RATE: dict[str, list[float]] = {}
+_METRICS = {"requests": 0, "status": {}}
 
 
 def _db():
@@ -383,8 +437,16 @@ def _app_auth(request: Request) -> None:
 
     expected = urlsign.app_token()
     header = request.headers.get("authorization", "")
-    if expected and secrets.compare_digest(header, f"Bearer {expected}"):
+    token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    if expected and token and secrets.compare_digest(token, expected):
         return
+    if token:
+        conn = store.connect()
+        try:
+            if store.valid_app_token(conn, token):
+                return
+        finally:
+            conn.close()
     raise HTTPException(status_code=401, detail="app token required")
 
 
@@ -545,6 +607,7 @@ async def app_status():
 
 @app.get("/api/app/health", dependencies=[Depends(_app_auth)])
 async def app_health():
+    base = call_bridge("health")
     conn = store.connect()
     try:
         tvs = conn.execute("SELECT COUNT(*) FROM tvs WHERE ignored=0").fetchone()[0]
@@ -552,7 +615,8 @@ async def app_health():
         queue = conn.execute("SELECT COUNT(*) FROM download_queue").fetchone()[0]
     finally:
         conn.close()
-    return {"ok": True, "version": APP_VERSION, "tvs": tvs, "library": lib, "queue": queue}
+    base.update({"version": APP_VERSION, "tvs": tvs, "library": lib, "queue": queue})
+    return base
 
 
 @app.get("/api/app/live", dependencies=[Depends(_app_auth)])
@@ -672,10 +736,78 @@ async def app_tv_rename(name: str = "", new_name: str = ""):
 
 
 @app.get("/api/app/discover", dependencies=[Depends(_app_auth)])
-async def app_discover(q: str = "", kind: str = ""):
+async def app_discover(q: str = "", kind: str = "", year_from: int = 0, year_to: int = 0,
+                       rating_min: float = 0.0, lang: str = "", genre: str = ""):
     if not q.strip():
         raise HTTPException(status_code=422, detail="q required")
-    return call_bridge("discover", q, kind, timeout=90.0)
+    return call_bridge("discover", q, kind, int(year_from), int(year_to), float(rating_min), lang, genre)
+
+
+@app.get("/api/app/discover/ai", dependencies=[Depends(_app_auth)])
+async def app_discover_ai(q: str = "", kind: str = "", year_from: int = 0, year_to: int = 0,
+                          rating_min: float = 0.0, lang: str = "", genre: str = ""):
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="q required")
+    return call_bridge(
+        "discover_ai", q, kind, int(year_from), int(year_to), float(rating_min), lang, genre,
+        timeout=90.0,
+    )
+
+
+@app.get("/api/app/similar", dependencies=[Depends(_app_auth)])
+async def app_similar(media_key: str = ""):
+    if not media_key:
+        raise HTTPException(status_code=422, detail="media_key required")
+    return call_bridge("similar", media_key)
+
+
+@app.get("/api/app/continue", dependencies=[Depends(_app_auth)])
+async def app_continue():
+    return call_bridge("continue_watching")
+
+
+@app.get("/api/app/progress", dependencies=[Depends(_app_auth)])
+async def app_progress(media_key: str = ""):
+    if not media_key:
+        raise HTTPException(status_code=422, detail="media_key required")
+    return call_bridge("progress", media_key)
+
+
+@app.post("/api/app/progress", dependencies=[Depends(_app_auth)])
+async def app_set_progress(media_key: str = "", position: float = 0.0, duration: float = 0.0):
+    if not media_key:
+        raise HTTPException(status_code=422, detail="media_key required")
+    return call_bridge("set_progress", media_key, float(position), float(duration))
+
+
+
+
+
+@app.get("/api/app/events", dependencies=[Depends(_app_auth)])
+async def app_events(since: int = 0):
+    return call_bridge("events", int(since))
+
+
+@app.post("/api/app/client-log", dependencies=[Depends(_app_auth)])
+async def app_client_log(level: str = "I", tag: str = "", message: str = ""):
+    return call_bridge("client_log", level, tag, message)
+
+
+@app.get("/api/app/tokens", dependencies=[Depends(_app_auth)])
+async def app_tokens_list():
+    return call_bridge("tokens_list")
+
+
+@app.post("/api/app/tokens", dependencies=[Depends(_app_auth)])
+async def app_tokens_create(label: str = ""):
+    return call_bridge("tokens_create", label)
+
+
+@app.delete("/api/app/tokens", dependencies=[Depends(_app_auth)])
+async def app_tokens_revoke(token: str = ""):
+    if not token:
+        raise HTTPException(status_code=422, detail="token required")
+    return call_bridge("tokens_revoke", token)
 
 
 @app.post("/api/app/library/stream", dependencies=[Depends(_app_auth)])
@@ -721,7 +853,7 @@ async def app_library():
         usage = store.library_size_bytes(conn)
     finally:
         conn.close()
-    return {"ok": True, "items": items, "usage_bytes": usage}
+    return {"ok": True, "items": items, "usage_bytes": usage, "limit_bytes": library.cache_limit_bytes()}
 
 
 @app.post("/api/app/library/delete", dependencies=[Depends(_app_auth)])

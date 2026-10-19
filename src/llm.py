@@ -201,7 +201,7 @@ async def suggest(query: str, candidates: list[dict]) -> dict | None:
             {"role": "user", "content": f"QUERY: {query}\n\nCANDIDATES:\n" + "\n".join(lines)},
         ],
         "temperature": 0.2,
-        "max_tokens": 4000,
+        "max_tokens": 6000,
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
