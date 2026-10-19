@@ -374,9 +374,10 @@ private fun SearchScreen(
     }
 
     LaunchedEffect(contentType) {
-        if (contentType == "live" && categories.isEmpty()) {
+        if (contentType == "live") {
             try {
-                categories = api.liveCategories()
+                if (categories.isEmpty()) categories = api.liveCategories()
+                if (liveResults.isEmpty()) onLiveResults(api.live("", 0))
             } catch (e: Exception) {
                 error = e.message
             }
