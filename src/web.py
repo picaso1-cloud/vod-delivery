@@ -531,6 +531,13 @@ async def app_control(token: str = "", action: str = "", value: float = 0.0):
     return call_bridge("app_control", token, action, float(value))
 
 
+@app.post("/api/app/playback", dependencies=[Depends(_app_auth)])
+async def app_playback(action: str = "", value: float = 0.0):
+    if not action:
+        raise HTTPException(status_code=422, detail="action required")
+    return call_bridge("control", action, float(value))
+
+
 @app.get("/api/app/status", dependencies=[Depends(_app_auth)])
 async def app_status():
     return call_bridge("status")

@@ -115,6 +115,31 @@ class Api(private val baseUrl: String, private val token: String) {
             exec("api/app/live/stream", mapOf("channel_id" to channelId.toString()), post = true)
         )
 
+    suspend fun play(mediaKey: String, tv: String, startPosition: Double = 0.0): ControlResult =
+        json.decodeFromString(
+            exec(
+                "api/app/play",
+                mapOf("media_key" to mediaKey, "tv" to tv, "start_position" to startPosition.toString()),
+                post = true,
+            )
+        )
+
+    suspend fun livePlay(channelId: Int, tv: String): ControlResult =
+        json.decodeFromString(
+            exec(
+                "api/app/live/play",
+                mapOf("channel_id" to channelId.toString(), "tv" to tv),
+                post = true,
+            )
+        )
+
+    suspend fun playback(action: String, value: Double = 0.0): ControlResult =
+        json.decodeFromString(
+            exec("api/app/playback", mapOf("action" to action, "value" to value.toString()), post = true)
+        )
+
+    suspend fun status(): StatusInfo = json.decodeFromString(exec("api/app/status"))
+
     suspend fun control(token: String, action: String, value: Double = 0.0): ControlResult =
         json.decodeFromString(
             exec(

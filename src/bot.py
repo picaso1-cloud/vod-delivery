@@ -249,6 +249,24 @@ async def _persist_renderers(renderers: list[Renderer]) -> list[Renderer]:
         conn.close()
 
 
+async def _ip_for_mac(mac: str | None) -> str | None:
+    if not mac:
+        return None
+    import subprocess as _sp
+
+    try:
+        out = await asyncio.to_thread(
+            lambda: _sp.run(["ip", "-4", "neigh"], capture_output=True, text=True, timeout=5).stdout
+        )
+    except Exception:
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and store.arp_mac(parts[0]) and store.arp_mac(parts[0]).lower() == mac.lower():
+            return parts[0]
+    return None
+
+
 async def _discover_merged() -> list:
     dlna = await _persist_renderers(await discover_renderers())
     conn = store.connect()
@@ -557,6 +575,9 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
         used = "chromecast"
         cast_url = payload["url"]
 
+        conn = store.connect()
+        lib = store.get_library_item(conn, payload["media_key"])
+        conn.close()
         lib_subs_lang = lib["subs_lang"] if lib else None
         subs_url = ""
         if lib_subs_lang and lib_subs_lang != "none":
@@ -564,13 +585,6 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
 
         def _cc_start(url: str, m: str) -> None:
             cc_play(target.ip, url, m, payload["title"], subs_url)
-
-        conn = store.connect()
-        lib = store.get_library_item(conn, payload["media_key"])
-        conn.close()
-        lib_subs_lang = lib["subs_lang"] if lib else None
-        if lib_subs_lang and lib_subs_lang != "none":
-            subs_url = f"http://{proxy.lan_ip_for(target.ip)}:{proxy.PROXY_PORT}/subs/{payload['media_key']}.vtt"
         if lib and lib["status"] == "ready" and lib["path"]:
             lib_path = Path(lib["path"])
             if lib_path.exists():
@@ -591,6 +605,10 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                 cast_url = proxy.proxied_url(session_obj.token, target.ip)
                 proxy_token = session_obj.token
                 used = "chromecast+file"
+                try:
+                    await asyncio.wait_for(session_obj.ready.wait(), timeout=12)
+                except asyncio.TimeoutError:
+                    pass
                 try:
                     _cc_start(cast_url, mime)
                 except Exception:
@@ -2719,6 +2737,45 @@ async def main() -> None:
 
     async def _resolve_renderer(tv_name: str):
         from .ssdp import Renderer, discover_renderers
+        if tv_name:
+            conn = store.connect()
+            cast_row = conn.execute(
+                "SELECT * FROM tvs WHERE kind='cast' AND ignored=0 AND name LIKE ? ORDER BY LENGTH(name) LIMIT 1",
+                (f"%{tv_name}%",),
+            ).fetchone()
+            conn.close()
+            if cast_row is not None:
+                ip = cast_row["ip"]
+                alive = False
+                if ip:
+                    try:
+                        _r, w = await asyncio.wait_for(asyncio.open_connection(ip, 8009), timeout=2)
+                        w.close()
+                        alive = True
+                    except Exception:
+                        alive = False
+                if not alive:
+                    moved = await _ip_for_mac(cast_row["mac"])
+                    if moved:
+                        try:
+                            _r, w = await asyncio.wait_for(asyncio.open_connection(moved, 8009), timeout=2)
+                            w.close()
+                            ip = moved
+                            alive = True
+                        except Exception:
+                            alive = False
+                if alive:
+                    try:
+                        conn = store.connect()
+                        store.upsert_tv(conn, cast_row["udn"], cast_row["name"], ip,
+                                        cast_row["location"], mac=cast_row["mac"], kind="cast")
+                        conn.close()
+                    except Exception:
+                        pass
+                    logger.info("api resolve: cast TV %r at %s", cast_row["name"], ip)
+                    return CastTarget(friendly_name=cast_row["name"], udn=cast_row["udn"], ip=ip)
+                logger.warning("api resolve: cast TV %r is off/unreachable (port 8009)", cast_row["name"])
+                return None
         discovered = await discover_renderers()
         conn = store.connect()
         rows = conn.execute("SELECT name, ip, location, mac, udn FROM tvs WHERE ignored=0").fetchall()
@@ -2802,7 +2859,11 @@ async def main() -> None:
         session["resume_pos"] = float(start_position) if start_position else None
         session["renderers"] = [renderer]
         session["selected"] = 0
-        result = await _execute_cast(session, library.owner_chat_id() or 0, 0)
+        try:
+            result = await _execute_cast(session, library.owner_chat_id() or 0, 0)
+        except Exception as exc:
+            logger.exception("api play failed")
+            result = f"{type(exc).__name__}: {str(exc)[:160]}"
         session["pending"] = None
         return {"ok": "PLAYING" in result or "Started at" in result, "detail": result}
 
@@ -2824,7 +2885,11 @@ async def main() -> None:
         session["resume_pos"] = None
         session["renderers"] = [renderer]
         session["selected"] = 0
-        result = await _execute_cast(session, library.owner_chat_id() or 0, 0)
+        try:
+            result = await _execute_cast(session, library.owner_chat_id() or 0, 0)
+        except Exception as exc:
+            logger.exception("api live play failed")
+            result = f"{type(exc).__name__}: {str(exc)[:160]}"
         session["pending"] = None
         return {"ok": "PLAYING" in result, "detail": result}
 

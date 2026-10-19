@@ -71,11 +71,14 @@ import com.souhail.vodcast.data.LiveChannel
 import com.souhail.vodcast.data.MediaGroup
 import com.souhail.vodcast.data.SessionInfo
 import com.souhail.vodcast.data.Settings
+import com.souhail.vodcast.data.StatusInfo
 import com.souhail.vodcast.data.StreamInfo
 import com.souhail.vodcast.data.TvInfo
 import com.souhail.vodcast.player.PlayerActivity
 import com.souhail.vodcast.util.AppLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -254,7 +257,7 @@ fun VodApp(settings: Settings) {
                         api = client,
                         selected = selectedTv,
                         onSelect = { tv ->
-                            AppLog.action("tv_select", "${tv.name} ${tv.ip ?: ""}")
+                            AppLog.action("tv_select", "${tv.name} ${tv.ip ?: ""} kind=${tv.kind ?: "?"}")
                             selectedTv = tv
                             settings.lastTv = tv.name
                             screen = Screen.Search
@@ -630,7 +633,11 @@ private fun TvScreen(
                             scope.launch {
                                 AppLog.action("probe", tv.name)
                                 try {
-                                    methods = methods + (tv.name to api.probe(tv.name).methods)
+                                    val detail = withContext(NonCancellable) { api.probe(tv.name) }
+                                    methods = methods + (tv.name to detail.methods)
+                                    AppLog.i("PROBE", "${tv.name}: ${detail.methods.joinToString { it.method }}")
+                                } catch (e: CancellationException) {
+                                    throw e
                                 } catch (e: Exception) {
                                     AppLog.e("PROBE", "failed for ${tv.name}", e)
                                     notify(e.message ?: "probe failed")
@@ -691,7 +698,9 @@ private fun PlayDialog(
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var target by remember { mutableStateOf("dlna") }
+    var target by remember(selectedTv) {
+        mutableStateOf(if (selectedTv?.kind == "cast") "cast" else "dlna")
+    }
     var quality by remember { mutableStateOf("copy") }
     var usePublic by remember { mutableStateOf(!usingLan) }
     var prepared by remember { mutableStateOf<StreamInfo?>(null) }
@@ -704,6 +713,11 @@ private fun PlayDialog(
             error = null
             AppLog.action("prepare", "media=${pending.mediaKey} target=$target live=${pending.isLive}")
             try {
+                if (target == "cast" && selectedTv?.kind == "cast") {
+                    AppLog.action("prepare", "server-side SCS cast to ${selectedTv.name}")
+                    prepared = StreamInfo(ok = true, title = pending.title, mode = "server")
+                    return@launch
+                }
                 val info = if (pending.isLive) {
                     api.liveStream(pending.mediaKey.removePrefix("live:").toInt())
                 } else {
@@ -743,6 +757,34 @@ private fun PlayDialog(
 
     fun start() {
         val stream = prepared ?: return
+        val picked = selectedTv
+        if (target == "cast" && picked?.kind == "cast") {
+            scope.launch {
+                busy = true
+                try {
+                    val result = if (pending.isLive) {
+                        api.livePlay(pending.mediaKey.removePrefix("live:").toInt(), picked.name)
+                    } else {
+                        api.play(pending.mediaKey, picked.name)
+                    }
+                    AppLog.action(
+                        "server_cast",
+                        "tv=${picked.name} ok=${result.ok} ${result.detail ?: result.error ?: ""}",
+                    )
+                    if (!result.ok) {
+                        error = result.detail ?: result.error ?: "TV cast failed"
+                        return@launch
+                    }
+                    onStart(StreamInfo(ok = true, title = pending.title, mode = "server"), null, pending.title)
+                } catch (e: Exception) {
+                    AppLog.e("SERVER_CAST", "failed for ${picked.name}", e)
+                    error = e.message
+                } finally {
+                    busy = false
+                }
+            }
+            return
+        }
         val url = if (usePublic) stream.public_url else stream.lan_url
         AppLog.action("start", "target=$target route=${if (usePublic) "public" else "lan"} url=${AppLog.redact(url ?: "")}")
         if (url.isNullOrBlank()) {
@@ -779,10 +821,10 @@ private fun PlayDialog(
                         val devices = caster.discover()
                         val device = devices.firstOrNull { it.ip == tv.ip }
                             ?: devices.firstOrNull { it.name.contains(tv.name, ignoreCase = true) }
-                            ?: devices.firstOrNull()
                         if (device == null) {
-                            AppLog.e("DLNA", "no renderer found for ${tv.name}")
-                            error = "No DLNA renderer found for ${tv.name}"
+                            val found = devices.joinToString(", ") { "${it.name}@${it.ip}" }
+                            AppLog.e("DLNA", "selected ${tv.name} ${tv.ip} not found; discovered: $found")
+                            error = "Selected TV ${tv.name} (${tv.ip}) is not on the network. Found: $found"
                             return@launch
                         }
                         caster.cast(device, url, pending.title, stream.mime ?: "video/mpeg")
@@ -858,6 +900,11 @@ private fun PlayDialog(
                 }
                 if (prepared == null) {
                     Button(onClick = { prepare() }, enabled = !busy) { Text("Prepare link") }
+                } else if (prepared?.mode == "server") {
+                    Text(
+                        "Casting through the server (SCS) to ${selectedTv?.name ?: "TV"}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
@@ -902,21 +949,36 @@ private fun RemoteScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var session by remember { mutableStateOf<SessionInfo?>(null) }
+    var status by remember { mutableStateOf<StatusInfo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    val isLive = stream.mode == "live"
+    val isServer = stream.mode == "server"
+    val isLive = stream.mode == "live" || status?.diag?.is_live == true
 
-    LaunchedEffect(stream.token) {
-        val token = stream.token ?: return@LaunchedEffect
-        while (true) {
-            try {
-                session = api.session(token)
-                if (error != null) AppLog.i("REMOTE", "session recovered")
-                error = null
-            } catch (e: Exception) {
-                if (error != e.message) AppLog.e("REMOTE", "session poll failed", e)
-                error = e.message
+    LaunchedEffect(stream.token, isServer) {
+        if (isServer) {
+            while (true) {
+                try {
+                    status = api.status()
+                    error = null
+                } catch (e: Exception) {
+                    if (error != e.message) AppLog.e("REMOTE", "status poll failed", e)
+                    error = e.message
+                }
+                delay(2000)
             }
-            delay(2000)
+        } else {
+            val token = stream.token ?: return@LaunchedEffect
+            while (true) {
+                try {
+                    session = api.session(token)
+                    if (error != null) AppLog.i("REMOTE", "session recovered")
+                    error = null
+                } catch (e: Exception) {
+                    if (error != e.message) AppLog.e("REMOTE", "session poll failed", e)
+                    error = e.message
+                }
+                delay(2000)
+            }
         }
     }
 
@@ -928,21 +990,37 @@ private fun RemoteScreen(
                 Text("LIVE", color = MaterialTheme.colorScheme.primary)
             }
         }
-        Text("session ${stream.token} · ${stream.mode}/${stream.format}", style = MaterialTheme.typography.bodySmall)
-        val current = session
-        if (current?.ok == true) {
-            if (!isLive) {
-                Text(
-                    "position ${current.position?.toInt() ?: 0}s / ${current.duration?.toInt() ?: 0}s",
-                    style = MaterialTheme.typography.titleMedium,
-                )
+        if (isServer) {
+            val st = status
+            Text("server cast · ${st?.tv ?: "TV"}", style = MaterialTheme.typography.bodySmall)
+            if (st?.playing == true) {
+                if (!isLive) {
+                    Text(
+                        "position ${st.position?.position?.toInt() ?: 0}s / ${st.position?.duration?.toInt() ?: 0}s",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+                Text("served ${"%.1f".format((st.diag?.max_served ?: 0L) / 1_048_576.0)} MB")
+            } else {
+                Text("not playing")
             }
-            Text(
-                if (isLive) "streaming · clients ${current.clients}"
-                else "served ${"%.1f".format((current.max_served ?: 0L) / 1_048_576.0)} MB · clients ${current.clients}"
-            )
         } else {
-            Text(current?.error ?: "waiting for session…")
+            Text("session ${stream.token} · ${stream.mode}/${stream.format}", style = MaterialTheme.typography.bodySmall)
+            val current = session
+            if (current?.ok == true) {
+                if (!isLive) {
+                    Text(
+                        "position ${current.position?.toInt() ?: 0}s / ${current.duration?.toInt() ?: 0}s",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+                Text(
+                    if (isLive) "streaming · clients ${current.clients}"
+                    else "served ${"%.1f".format((current.max_served ?: 0L) / 1_048_576.0)} MB · clients ${current.clients}"
+                )
+            } else {
+                Text(current?.error ?: "waiting for session…")
+            }
         }
         if (!isLive) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -950,9 +1028,14 @@ private fun RemoteScreen(
                 Button(onClick = {
                     if (token != null) scope.launch {
                         try {
-                            val pos = (session?.position ?: 0.0) - 30.0
-                            AppLog.action("seek", "-30 to ${maxOf(0.0, pos).toInt()}s")
-                            api.control(token, "seek", maxOf(0.0, pos))
+                            if (isServer) {
+                                AppLog.action("seek", "-30s (server)")
+                                api.playback("seek", -30.0)
+                            } else {
+                                val pos = (session?.position ?: 0.0) - 30.0
+                                AppLog.action("seek", "-30 to ${maxOf(0.0, pos).toInt()}s")
+                                api.control(token, "seek", maxOf(0.0, pos))
+                            }
                         } catch (e: Exception) {
                             notify(e.message ?: "seek failed")
                         }
@@ -961,9 +1044,14 @@ private fun RemoteScreen(
                 Button(onClick = {
                     if (token != null) scope.launch {
                         try {
-                            val pos = (session?.position ?: 0.0) + 30.0
-                            AppLog.action("seek", "+30 to ${pos.toInt()}s")
-                            api.control(token, "seek", pos)
+                            if (isServer) {
+                                AppLog.action("seek", "+30s (server)")
+                                api.playback("seek", 30.0)
+                            } else {
+                                val pos = (session?.position ?: 0.0) + 30.0
+                                AppLog.action("seek", "+30 to ${pos.toInt()}s")
+                                api.control(token, "seek", pos)
+                            }
                         } catch (e: Exception) {
                             notify(e.message ?: "seek failed")
                         }
@@ -974,8 +1062,12 @@ private fun RemoteScreen(
         Button(onClick = {
             scope.launch {
                 try {
-                    AppLog.action("stop", "token=${stream.token} live=$isLive")
-                    stream.token?.let { api.control(it, "stop") }
+                    AppLog.action("stop", "token=${stream.token} live=$isLive server=$isServer")
+                    if (isServer) {
+                        api.playback("stop")
+                    } else {
+                        stream.token?.let { api.control(it, "stop") }
+                    }
                     device?.let { runCatching { DlnaCaster(context).stop(it) } }
                     CastCaster.stop(context)
                 } catch (_: Exception) {

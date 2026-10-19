@@ -39,7 +39,7 @@ def play(host: str, url: str, mime: str = "video/mp4", title: str = "", subs_url
         kwargs = {"subtitles": subs_url, "subtitles_mime": "text/vtt", "subtitles_lang": "ara"}
     mc.play_media(url, mime, title=title, **kwargs)
     mc.block_until_active(timeout=30)
-    logger.info("chromecast app active on %s: %s", host, cc_status(host))
+    logger.info("chromecast app active on %s: %s", host, status(host))
     return "PLAYING"
 
 

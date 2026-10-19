@@ -138,3 +138,26 @@ data class LiveChannel(
     val category_id: Int = 0,
     val icon: String? = null,
 )
+
+@Serializable
+data class StatusPosition(
+    val position: Double = 0.0,
+    val duration: Double = 0.0,
+)
+
+@Serializable
+data class StatusDiag(
+    val token: String? = null,
+    val max_served: Long = 0,
+    val is_live: Boolean = false,
+)
+
+@Serializable
+data class StatusInfo(
+    val playing: Boolean = false,
+    val tv: String? = null,
+    val paused: Boolean = false,
+    val title: String? = null,
+    val position: StatusPosition? = null,
+    val diag: StatusDiag? = null,
+)
