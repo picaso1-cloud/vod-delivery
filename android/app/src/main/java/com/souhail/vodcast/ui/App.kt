@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -52,6 +53,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.mediarouter.app.MediaRouteButton
@@ -71,7 +74,10 @@ import com.souhail.vodcast.data.Settings
 import com.souhail.vodcast.data.StreamInfo
 import com.souhail.vodcast.data.TvInfo
 import com.souhail.vodcast.player.PlayerActivity
+import com.souhail.vodcast.util.AppLog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 sealed class Screen {
@@ -80,6 +86,7 @@ sealed class Screen {
     data class Detail(val group: MediaGroup) : Screen()
     data object Tvs : Screen()
     data object Remote : Screen()
+    data object Logs : Screen()
 }
 
 private data class PendingPlay(val mediaKey: String, val title: String, val isLive: Boolean = false)
@@ -109,9 +116,14 @@ fun VodApp(settings: Settings) {
 
     LaunchedEffect(toast) {
         toast?.let {
+            AppLog.notify(it)
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             toast = null
         }
+    }
+
+    LaunchedEffect(screen) {
+        AppLog.action("screen", screen::class.simpleName ?: "?")
     }
 
     Scaffold(
@@ -122,6 +134,7 @@ fun VodApp(settings: Settings) {
                         when {
                             screen is Screen.Setup -> "Connect to VOD"
                             contentType == "live" && screen is Screen.Search -> "Live TV"
+                            screen is Screen.Logs -> "Logs"
                             else -> "VOD Cast"
                         }
                     )
@@ -141,6 +154,11 @@ fun VodApp(settings: Settings) {
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(end = 6.dp),
                         )
+                    }
+                    if (screen !is Screen.Setup) {
+                        IconButton(onClick = { screen = Screen.Logs }) {
+                            Icon(Icons.Default.BugReport, contentDescription = "Logs")
+                        }
                     }
                     AndroidView(factory = { ctx ->
                         MediaRouteButton(ctx).also { CastButtonFactory.setUpMediaRouteButton(ctx, it) }
@@ -184,6 +202,7 @@ fun VodApp(settings: Settings) {
                             }
                         }
                         if (chosen == null) {
+                            AppLog.w("CONNECT", "both URLs unreachable")
                             toast = "Cannot reach either URL — check the server and token"
                             return@launch
                         }
@@ -195,6 +214,7 @@ fun VodApp(settings: Settings) {
                         api = chosen
                         usingLan = lanOk
                         screen = Screen.Search
+                        AppLog.action("connect", "route=${if (lanOk) "lan" else "public"}")
                         toast = if (lanOk) "Connected over LAN" else "Connected over public URL"
                     }
                 }
@@ -213,8 +233,11 @@ fun VodApp(settings: Settings) {
                         onLiveResults = { liveResults = it },
                         selectedCategory = selectedCategory,
                         onCategory = { selectedCategory = it },
-                        onOpen = { screen = Screen.Detail(it) },
-                        onOpenLive = { pendingPlay = PendingPlay("live:${it.channel_id}", it.title, true) },
+                        onOpen = { AppLog.action("open_detail", it.title); screen = Screen.Detail(it) },
+                        onOpenLive = {
+                            AppLog.action("open_live", "${it.title} (${it.channel_id})")
+                            pendingPlay = PendingPlay("live:${it.channel_id}", it.title, true)
+                        },
                     )
                 }
 
@@ -231,6 +254,7 @@ fun VodApp(settings: Settings) {
                         api = client,
                         selected = selectedTv,
                         onSelect = { tv ->
+                            AppLog.action("tv_select", "${tv.name} ${tv.ip ?: ""}")
                             selectedTv = tv
                             settings.lastTv = tv.name
                             screen = Screen.Search
@@ -238,6 +262,8 @@ fun VodApp(settings: Settings) {
                         notify = { toast = it },
                     )
                 }
+
+                Screen.Logs -> LogsScreen()
 
                 Screen.Remote -> {
                     val stream = lastStream
@@ -359,6 +385,7 @@ private fun SearchScreen(
         scope.launch {
             loading = true
             error = null
+            AppLog.action("search", "type=$contentType q=$query category=$category")
             try {
                 if (contentType == "live") {
                     onLiveResults(api.live(query, category))
@@ -366,6 +393,7 @@ private fun SearchScreen(
                     onResults(api.search(query, contentType))
                 }
             } catch (e: Exception) {
+                AppLog.e("SEARCH", "failed", e)
                 error = e.message
             } finally {
                 loading = false
@@ -600,9 +628,11 @@ private fun TvScreen(
                     trailingContent = {
                         TextButton(onClick = {
                             scope.launch {
+                                AppLog.action("probe", tv.name)
                                 try {
                                     methods = methods + (tv.name to api.probe(tv.name).methods)
                                 } catch (e: Exception) {
+                                    AppLog.e("PROBE", "failed for ${tv.name}", e)
                                     notify(e.message ?: "probe failed")
                                 }
                             }
@@ -672,6 +702,7 @@ private fun PlayDialog(
         scope.launch {
             busy = true
             error = null
+            AppLog.action("prepare", "media=${pending.mediaKey} target=$target live=${pending.isLive}")
             try {
                 val info = if (pending.isLive) {
                     api.liveStream(pending.mediaKey.removePrefix("live:").toInt())
@@ -691,12 +722,18 @@ private fun PlayDialog(
                 }
                 if (!info.ok) {
                     prepared = null
+                    AppLog.e("PREPARE", "server refused: ${info.error}")
                     error = info.error ?: "stream failed"
                     return@launch
                 }
                 prepared = info
                 usePublic = !usingLan
+                AppLog.action(
+                    "prepared",
+                    "token=${info.token} mode=${info.mode} mime=${info.mime} route=${if (usePublic) "public" else "lan"}",
+                )
             } catch (e: Exception) {
+                AppLog.e("PREPARE", "failed", e)
                 error = e.message
             } finally {
                 busy = false
@@ -707,6 +744,7 @@ private fun PlayDialog(
     fun start() {
         val stream = prepared ?: return
         val url = if (usePublic) stream.public_url else stream.lan_url
+        AppLog.action("start", "target=$target route=${if (usePublic) "public" else "lan"} url=${AppLog.redact(url ?: "")}")
         if (url.isNullOrBlank()) {
             error = "No ${if (usePublic) "public" else "LAN"} URL — pick a different option."
             return
@@ -743,6 +781,7 @@ private fun PlayDialog(
                             ?: devices.firstOrNull { it.name.contains(tv.name, ignoreCase = true) }
                             ?: devices.firstOrNull()
                         if (device == null) {
+                            AppLog.e("DLNA", "no renderer found for ${tv.name}")
                             error = "No DLNA renderer found for ${tv.name}"
                             return@launch
                         }
@@ -871,8 +910,10 @@ private fun RemoteScreen(
         while (true) {
             try {
                 session = api.session(token)
+                if (error != null) AppLog.i("REMOTE", "session recovered")
                 error = null
             } catch (e: Exception) {
+                if (error != e.message) AppLog.e("REMOTE", "session poll failed", e)
                 error = e.message
             }
             delay(2000)
@@ -910,6 +951,7 @@ private fun RemoteScreen(
                     if (token != null) scope.launch {
                         try {
                             val pos = (session?.position ?: 0.0) - 30.0
+                            AppLog.action("seek", "-30 to ${maxOf(0.0, pos).toInt()}s")
                             api.control(token, "seek", maxOf(0.0, pos))
                         } catch (e: Exception) {
                             notify(e.message ?: "seek failed")
@@ -920,6 +962,7 @@ private fun RemoteScreen(
                     if (token != null) scope.launch {
                         try {
                             val pos = (session?.position ?: 0.0) + 30.0
+                            AppLog.action("seek", "+30 to ${pos.toInt()}s")
                             api.control(token, "seek", pos)
                         } catch (e: Exception) {
                             notify(e.message ?: "seek failed")
@@ -931,6 +974,7 @@ private fun RemoteScreen(
         Button(onClick = {
             scope.launch {
                 try {
+                    AppLog.action("stop", "token=${stream.token} live=$isLive")
                     stream.token?.let { api.control(it, "stop") }
                     device?.let { runCatching { DlnaCaster(context).stop(it) } }
                     CastCaster.stop(context)
@@ -940,5 +984,36 @@ private fun RemoteScreen(
             }
         }) { Text("Stop") }
         error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+@Composable
+private fun LogsScreen() {
+    val context = LocalContext.current
+    var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var reload by remember { mutableStateOf(0) }
+
+    LaunchedEffect(reload) {
+        lines = withContext(Dispatchers.IO) { AppLog.recent() }
+    }
+
+    Column(Modifier.fillMaxSize().padding(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { reload++ }) { Text("Refresh") }
+            Button(onClick = { AppLog.share(context) }) { Text("Share") }
+            TextButton(onClick = { AppLog.clear(); reload++ }) { Text("Clear") }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("${lines.size} lines · newest last", style = MaterialTheme.typography.bodySmall)
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(lines) { line ->
+                Text(
+                    line,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(vertical = 1.dp),
+                )
+            }
+        }
     }
 }

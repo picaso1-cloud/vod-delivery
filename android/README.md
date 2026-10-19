@@ -109,6 +109,20 @@ android/app/src/main/java/com/souhail/vodcast/
 7. **Custom Cast receiver** — the default receiver is used (`CC1AD845`); a
    custom receiver enables MPEG-TS/HLS and subtitles.
 
+## Logging
+
+Every event is logged to three places: the Android log (tag **`VODCAST`**), a rolling
+file (`files/logs/vodcast.log`, 1 MB × 2), and the in-app **Logs** screen (bug icon in
+the top bar) with **Refresh / Share / Clear**.
+
+- Logged: app start + device info, screen changes, searches, detail/live opens, TV
+  select/probe, connect route, prepare/start/stop/seek, DLNA discovery + SOAP result,
+  Cast load/stop, player open/state/isPlaying/errors, every API call (method, path,
+  status, duration, bytes), user-visible notifications (toasts), and uncaught crashes.
+- Secrets are redacted: signed URL `sig`/`exp`, `token` query values, bearer headers.
+- Share exports the file through a FileProvider (chooser → Telegram/Drive/etc.).
+- Filter live: `adb logcat -s VODCAST`.
+
 ## Troubleshooting
 
 - **401** — token mismatch; re-copy `app_token`.

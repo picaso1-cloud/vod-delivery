@@ -2,6 +2,7 @@ package com.souhail.vodcast.cast
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import com.souhail.vodcast.util.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -33,6 +34,7 @@ class DlnaCaster(private val context: Context) {
         .build()
 
     suspend fun discover(timeoutMs: Int = 3000): List<DlnaDevice> = withContext(Dispatchers.IO) {
+        AppLog.i("DLNA", "SSDP discovery start (timeout=${timeoutMs}ms)")
         val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val lock = wifi.createMulticastLock("vodcast-ssdp").apply {
             setReferenceCounted(false)
@@ -69,8 +71,14 @@ class DlnaCaster(private val context: Context) {
                     }
                 }
             }
-            locations.mapNotNull { runCatching { describe(it) }.getOrNull() }
-                .distinctBy { it.controlUrl }
+            val devices = locations.mapNotNull {
+                runCatching { describe(it) }.onFailure { err ->
+                    AppLog.w("DLNA", "describe failed for $it: ${err.message}")
+                }.getOrNull()
+            }.distinctBy { it.controlUrl }
+            devices.forEach { AppLog.i("DLNA", "found ${it.name} ${it.ip} -> ${it.controlUrl}") }
+            AppLog.i("DLNA", "discovery done: ${devices.size} renderer(s)")
+            devices
         } finally {
             if (lock.isHeld) lock.release()
         }
@@ -109,6 +117,7 @@ class DlnaCaster(private val context: Context) {
 
     suspend fun cast(device: DlnaDevice, mediaUrl: String, title: String, mime: String) =
         withContext(Dispatchers.IO) {
+            AppLog.action("dlna_cast", "tv=${device.name} mime=$mime url=${AppLog.redact(mediaUrl)}")
             val metadata = didl(title, mediaUrl, mime)
             soap(
                 device,
@@ -120,6 +129,7 @@ class DlnaCaster(private val context: Context) {
         }
 
     suspend fun stop(device: DlnaDevice) = withContext(Dispatchers.IO) {
+        AppLog.action("dlna_stop", "tv=${device.name}")
         soap(device, "Stop", "<InstanceID>0</InstanceID>")
     }
 
@@ -137,7 +147,11 @@ class DlnaCaster(private val context: Context) {
             .build()
         client.newCall(request).execute().use { response ->
             val text = response.body?.string() ?: ""
-            if (!response.isSuccessful) error("DLNA $action HTTP ${response.code}: ${text.take(200)}")
+            AppLog.i("DLNA", "$action ${device.name} -> HTTP ${response.code}")
+            if (!response.isSuccessful) {
+                AppLog.e("DLNA", "$action failed on ${device.name}: ${text.take(300)}")
+                error("DLNA $action HTTP ${response.code}: ${text.take(200)}")
+            }
             return text
         }
     }

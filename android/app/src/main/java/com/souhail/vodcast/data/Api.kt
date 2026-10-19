@@ -9,6 +9,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.souhail.vodcast.util.AppLog
 import java.util.concurrent.TimeUnit
 
 class Api(private val baseUrl: String, private val token: String) {
@@ -28,15 +29,36 @@ class Api(private val baseUrl: String, private val token: String) {
 
     private suspend fun exec(path: String, params: Map<String, String> = emptyMap(), post: Boolean = false): String =
         withContext(Dispatchers.IO) {
+            val httpUrl = url(path, params)
+            val display = AppLog.redact(
+                httpUrl.encodedPath + if (httpUrl.encodedQuery.isNullOrBlank()) "" else "?${httpUrl.encodedQuery}"
+            )
+            val method = if (post) "POST" else "GET"
+            val started = System.nanoTime()
+            var logged = false
             val req = Request.Builder()
-                .url(url(path, params))
+                .url(httpUrl)
                 .header("Authorization", "Bearer $token")
                 .apply { if (post) post("".toRequestBody()) }
                 .build()
-            client.newCall(req).execute().use { resp ->
-                val body = resp.body?.string() ?: ""
-                if (!resp.isSuccessful) error("HTTP ${resp.code}: ${body.take(240)}")
-                body
+            try {
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    val millis = (System.nanoTime() - started) / 1_000_000
+                    AppLog.api(
+                        method, display, resp.code, millis, body.length.toLong(),
+                        if (resp.isSuccessful) null else body.take(160),
+                    )
+                    logged = true
+                    if (!resp.isSuccessful) error("HTTP ${resp.code}: ${body.take(240)}")
+                    body
+                }
+            } catch (e: Exception) {
+                if (!logged) {
+                    val millis = (System.nanoTime() - started) / 1_000_000
+                    AppLog.api(method, display, 0, millis, 0, "${e.javaClass.simpleName}: ${e.message}")
+                }
+                throw e
             }
         }
 
