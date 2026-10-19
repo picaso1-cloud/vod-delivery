@@ -40,3 +40,7 @@ android/build/
 android/app/build/
 android/local.properties
 .idea/
+
+# RLM protocol state (local only)
+SUPERVISOR_LOG.md
+TODOS.md
