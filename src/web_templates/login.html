@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Sign in · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="login-card">
+  <div class="brand-hero">
+    <span class="mark">🎬</span>
+    <h1>VOD-Delivery</h1>
+    <p class="muted">Your home media console</p>
+  </div>
+  <div class="card card--hero">
+    {% if error %}<div class="flash flash--err" style="margin-bottom:var(--s-4)"><span class="flash-icon">⚠️</span><span>Wrong password — try again.</span></div>{% endif %}
+    <form method="post" action="/login">
+      <label class="field">
+        <span>Panel password</span>
+        <input type="password" name="password" placeholder="Enter password" autofocus autocomplete="current-password">
+      </label>
+      <div class="form-actions">
+        <button type="submit" style="width:100%">Enter</button>
+      </div>
+    </form>
+    <p class="hint mt-3">Default password: <code>admin</code> — change it in Settings.</p>
+  </div>
+</div>
+{% endblock %}

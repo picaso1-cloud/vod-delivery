@@ -1,0 +1,10 @@
+[Unit]
+Description=VOD-delivery weekly catalog drift check
+After=network-online.target vod-indexer.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/souhail/VOD-delivery
+ExecStart=/home/souhail/VOD-delivery/.venv/bin/python scripts/catalog_diff.py diff
+StandardOutput=append:/home/souhail/VOD-delivery/data/catalog-snapshots/drift.log
+StandardError=append:/home/souhail/VOD-delivery/data/catalog-snapshots/drift.log

@@ -1,0 +1,16 @@
+[Unit]
+Description=VOD-Delivery Telegram bot + web panel + re-stream proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/souhail/VOD-delivery
+ExecStart=/home/souhail/VOD-delivery/.venv/bin/python -m src.bot
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/souhail/VOD-delivery/data/bot.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

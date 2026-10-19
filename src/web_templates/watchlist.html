@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Watchlist · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Watchlist</h1>
+  <span class="sub">{{ items|length }} saved</span>
+</div>
+<div class="card">
+  {% if items %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>Added</th><th>Title</th><th>Kind</th></tr>
+    {% for i in items %}
+    <tr>
+      <td class="muted nowrap">{{ i["added_at"][:16].replace("T"," ") }}</td>
+      <td>{{ i["title"] }} {% if i["year"] %}<span class="muted">({{ i["year"] }})</span>{% endif %}</td>
+      <td><span class="pill pill--muted">{{ i["kind"] }}</span></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <span class="empty-icon">🍿</span>
+    <span class="empty-title">Your watchlist is empty</span>
+    <span class="empty-hint">Save movies and series from the Telegram bot to build your library queue.</span>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

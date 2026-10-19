@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}TVs · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Televisions</h1>
+  <span class="sub">{{ tvs|length }} registered</span>
+</div>
+
+{% if saved %}<div class="flash flash--ok"><span class="flash-icon">✓</span><span>Saved.</span></div>{% endif %}
+{% if request.query_params.get("scan") %}<div class="flash flash--info"><span class="flash-icon">🔎</span><span>{{ request.query_params.get("scan") }}</span></div>{% endif %}
+{% if request.query_params.get("error") %}<div class="flash flash--err"><span class="flash-icon">⚠️</span><span>{{ request.query_params.get("error") }}</span></div>{% endif %}
+
+{% if tvs %}
+  {% for t in tvs %}
+  <div class="card tv-card">
+    <div class="tv-head">
+      <div class="tv-id">
+        <div class="flex" style="gap:var(--s-2);flex-wrap:wrap">
+          <h3 style="margin:0;font-size:18px">{{ t["name"] }}</h3>
+          {% if t["ignored"] %}
+            <span class="pill pill--muted"><span class="dot dot--muted"></span>Ignored</span>
+          {% else %}
+            <span class="pill pill--ok"><span class="dot dot--ok"></span>Ready</span>
+          {% endif %}
+          <span class="pill pill--accent">{% if t["kind"] == "cast" %}Google Cast{% else %}DLNA{% endif %}</span>
+        </div>
+        <div class="muted mt-2 flex" style="gap:var(--s-4);flex-wrap:wrap">
+          <span>IP <span class="mono">{{ t["ip"] or "—" }}</span></span>
+          <span>MAC <span class="mono">{{ t["mac"] or "—" }}</span></span>
+          {% if t["last_seen"] %}<span>Seen {{ t["last_seen"][:16].replace("T"," ") }}</span>{% endif %}
+        </div>
+      </div>
+      <form method="post" action="/tvs/{{ t["udn"] }}/rename" class="form-row" style="flex:0 0 auto">
+        <input type="text" name="name" value="{{ t["name"] }}" class="w-md" aria-label="Rename TV">
+        <button class="ghost btn--sm">Rename</button>
+      </form>
+    </div>
+
+    <form method="post" action="/tvs/{{ t["udn"] }}/flags" class="tv-flags">
+      <div class="flex" style="flex-wrap:wrap;gap:var(--s-4) var(--s-6);align-items:center">
+        <label class="flag"><input type="checkbox" name="wol" {% if t["wol_enabled"] %}checked{% endif %}> Wake-on-LAN</label>
+        <label class="flag"><input type="checkbox" name="prefer_proxy" {% if t["prefer_proxy"] %}checked{% endif %}> Proxy (file mode)</label>
+        <label class="flag"><input type="checkbox" name="downgrade" {% if t["downgrade"] %}checked{% endif %}> Downgrade HEVC→1080p</label>
+        <label class="flag"><input type="checkbox" name="ignored" {% if t["ignored"] %}checked{% endif %}> Ignore</label>
+      </div>
+      <div class="form-row mt-3">
+        <input type="text" name="mac" value="{{ t["mac"] or "" }}" placeholder="AA:BB:CC:DD:EE:FF" class="w-md mono" aria-label="MAC address">
+        <button class="ghost btn--sm">Save flags</button>
+      </div>
+    </form>
+
+    <div class="tv-foot">
+      <form method="post" action="/tvs/{{ t["udn"] }}/delete">
+        <button class="btn--danger-quiet btn--sm">🗑 Remove TV</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+<div class="card">
+  <div class="empty">
+    <span class="empty-icon">📺</span>
+    <span class="empty-title">No TVs registered</span>
+    <span class="empty-hint">Run <code>/tvs</code> from the Telegram bot to discover TVs on your network, or add one manually below.</span>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h2>Scan &amp; identify</h2>
+    <p class="muted">Ping an IP, read its MAC, probe Google Cast ports, hunt for a DLNA description, validate AVTransport, and register it with the right casting logic.</p>
+    <form method="post" action="/tvs/scan" class="form-row mt-3">
+      <input type="text" name="ip" placeholder="192.168.1.x" class="w-md" aria-label="IP address to scan">
+      <button>🔍 Scan</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Add manually</h2>
+    <p class="muted"><b>cast</b> = Android TV / Google Cast (works immediately). <b>dlna</b> = needs one DLNA discovery so the bot learns its control URL.</p>
+    <form method="post" action="/tvs/add">
+      <label class="field"><span>Name</span><input type="text" name="name" placeholder="Living room"></label>
+      <label class="field mt-2"><span>MAC (identity)</span><input type="text" name="mac" placeholder="AA:BB:CC:DD:EE:FF" class="mono"></label>
+      <label class="field mt-2"><span>IP (current)</span><input type="text" name="ip" placeholder="192.168.1.x"></label>
+      <label class="field mt-2"><span>Kind</span>
+        <select name="kind">
+          <option value="cast">cast — Android TV / Google Cast</option>
+          <option value="dlna">dlna — Samsung / LG / others</option>
+        </select>
+      </label>
+      <div class="form-actions"><button>Add TV</button></div>
+    </form>
+  </div>
+</div>
+{% endblock %}

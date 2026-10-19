@@ -1,0 +1,30 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data / runtime
+data/
+*.db
+*.sqlite3
+logs/
+
+# Downloads & scratch
+/tmp/
+downloads/
+.zvec-grep/
+
+# Runtime / tooling
+*.log
+.serena/
+.hist/
+.codebase-memory/
+.zvec-grep/
+.env.*
+!.env.example
+
+# Test caches
+.pytest_cache/

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Settings · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Settings</h1>
+</div>
+
+{% if saved %}<div class="flash flash--ok"><span class="flash-icon">✓</span><span>Saved. Changes apply immediately.</span></div>{% endif %}
+{% if error %}<div class="flash flash--err"><span class="flash-icon">⚠️</span><span>{{ error }}</span></div>{% endif %}
+
+<div class="card">
+  <h2>IPTV provider (Xtream)</h2>
+  <form method="post" action="/settings/provider">
+    <label class="field"><span>Server base</span><input type="text" name="xstream_base" value="{{ cfg["xstream_base"] }}"></label>
+    <div class="grid2 mt-3">
+      <label class="field"><span>Username</span><input type="text" name="xstream_username" value="{{ cfg["xstream_username"] }}" autocomplete="off"></label>
+      <label class="field"><span>Password</span><input type="text" name="xstream_password" value="{{ cfg["xstream_password"] }}" autocomplete="off"></label>
+    </div>
+    <div class="form-actions">
+      <button>Save provider</button>
+      <span class="hint">After changing provider, run the indexer to rebuild the catalog.</span>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Import from M3U URL</h2>
+  <p class="muted">Paste a <code>get.php</code> URL from a new subscription — credentials get extracted and saved.</p>
+  <form method="post" action="/settings/m3u">
+    <label class="field"><span>M3U URL</span><input type="text" name="m3u_url" placeholder="http://host:25461/get.php?username=...&password=...&type=m3u_plus"></label>
+    <div class="form-actions"><button>Import</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Access</h2>
+  <form method="post" action="/settings/access">
+    <label class="field"><span>Allowed Telegram IDs</span><input type="text" name="allowed_ids" value="{{ settings.get("allowed_ids","") }}" placeholder="12345678,87654321"></label>
+    <label class="field mt-3"><span>Panel password</span><input type="text" name="web_password" value="" placeholder="(unchanged)"></label>
+    <div class="form-actions"><button>Save access</button></div>
+  </form>
+</div>
+{% endblock %}

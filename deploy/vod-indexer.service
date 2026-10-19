@@ -1,0 +1,9 @@
+[Unit]
+Description=VOD-Delivery catalog re-index (weekly)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/souhail/VOD-delivery
+ExecStart=/home/souhail/VOD-delivery/.venv/bin/python -m src.indexer
+StandardOutput=append:/home/souhail/VOD-delivery/data/indexer.log
+StandardError=inherit

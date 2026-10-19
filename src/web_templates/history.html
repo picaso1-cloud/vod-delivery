@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}History · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Play history</h1>
+  <span class="sub">{{ plays|length }} entries</span>
+</div>
+<div class="card">
+  {% if plays %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>Started</th><th>Title</th><th>Kind</th><th>TV</th><th>Progress</th><th>Done</th></tr>
+    {% for p in plays %}
+    <tr>
+      <td class="muted nowrap">{{ p["started_at"][:16].replace("T"," ") }}</td>
+      <td>{{ p["title"] }}</td>
+      <td><span class="pill pill--muted">{{ p["kind"] }}</span></td>
+      <td>{{ p["tv_name"] }}</td>
+      <td style="min-width:180px">
+        {% if p["duration_s"] %}
+        <div class="bar"><div style="width:{{ (p["position_s"] / p["duration_s"] * 100) | round | int }}%"></div></div>
+        <span class="muted">{{ (p["position_s"]/60)|round|int }} / {{ (p["duration_s"]/60)|round|int }} min</span>
+        {% else %}<span class="muted">{{ (p["position_s"]/60)|round|int }} min</span>{% endif %}
+      </td>
+      <td>{% if p["completed"] %}<span class="pill pill--ok">✓ Done</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <span class="empty-icon">🕓</span>
+    <span class="empty-title">No plays recorded yet</span>
+    <span class="empty-hint">Anything you cast will show up in this timeline.</span>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
