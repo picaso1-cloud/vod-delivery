@@ -4,8 +4,10 @@ Native Kotlin/Compose client for the VOD-delivery service. It searches the
 catalog through the app API, prepares a signed stream link, and casts it to a
 DLNA TV, a Chromecast, or plays it locally.
 
-**Status:** P0 scaffold — compiles, wires every P0 flow, DLNA casting and the
-remote screen are implemented; Chromecast uses Google's default receiver.
+**Status:** P0 — verified on a Samsung SM-F946B (Android 13): launch, connect,
+search, TV list, stream preparation (~3 s), and on-device playback with video +
+audio. DLNA casting and the remote screen are implemented; Chromecast uses
+Google's default receiver.
 
 ## Build (local only)
 
@@ -68,7 +70,9 @@ sdk.dir=/path/to/Android/Sdk
 - **Chromecast**: always request `format=mp4` (fragmented MP4). Google's default
   receiver does not play MPEG-TS. Pick the device with the Cast button in the
   top bar before starting.
-- **Phone**: `cache` mode; the player consumes the growing file directly.
+- **Phone**: `quality=downgrade` (MPEG-TS H.264/AAC). MKV keeps its index at EOF
+  and cannot be read progressively — the player would stall. The server waits for
+  new bytes at the live edge instead of returning 416 while the feed is alive.
 
 ## Project layout
 
@@ -110,3 +114,15 @@ android/app/src/main/java/com/souhail/vodcast/
   the same network.
 - **TV black screen** — check `/api/app/session` `max_served`; if it stays 0 the
   TV never fetched the URL (wrong LAN IP or DLNA renderer rejected the URI).
+
+## Verified on device
+
+- Samsung SM-F946B, Android 13 (SDK 33), over the public edge
+  (`https://vod.allocamera.com`).
+- Launch → connect → search (`greenland`, 8 results) → TV list (6 TVs) →
+  prepare (3.1 s, public URL, `mode=cache format=ts mime=video/mpeg`) →
+  playback: `c2.qti.avc.decoder` active, AudioTrack `state:started`, no
+  `PlaybackException`.
+- The app requires an **AppCompat theme** (`Theme.AppCompat.DayNight.NoActionBar`):
+  `MediaRouteButton` reads AppCompat's `colorPrimary` and crashes with
+  `background can not be translucent: #0` on a framework-only theme.
