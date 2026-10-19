@@ -7,14 +7,14 @@ __pycache__/
 .venv/
 
 # Data / runtime
-data/
+/data/
 *.db
 *.sqlite3
-logs/
+/logs/
 
 # Downloads & scratch
 /tmp/
-downloads/
+/downloads/
 .zvec-grep/
 
 # Runtime / tooling
