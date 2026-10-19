@@ -1523,6 +1523,11 @@ async def main() -> None:
                 logger.exception("owner notify failed")
 
     async def _cache_warning_check() -> None:
+        import shutil as _shutil
+
+        free = _shutil.disk_usage(library.LIBRARY_DIR).free
+        if free < 15 * 1024**3:
+            await _notify_owner(f"⚠️ Low disk space: <b>{free / 1024**3:.1f} GB</b> free.")
         usage = library.cache_usage_bytes()
         limit = library.cache_limit_bytes()
         conn = store.connect()
@@ -1551,6 +1556,9 @@ async def main() -> None:
                 if active_play is not None or proxy.active_session() is not None:
                     continue
                 if provider_health()["down"]:
+                    continue
+                if library.cache_usage_bytes() > library.cache_limit_bytes():
+                    logger.info("library over its size limit — deferring downloads")
                     continue
                 now = asyncio.get_running_loop().time()
                 if now < next_run:

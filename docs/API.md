@@ -116,3 +116,6 @@ Provider URLs are never returned by these endpoints.
 - The IPTV provider allows **one connection**: one active stream at a time (local or remote).
 - Cached library content can be served to multiple clients concurrently (no provider slot).
 - Sessions are in-memory: a server restart invalidates issued links.
+- Each session is capped at `session_max_gb` (default 8 GB; virtual feeds 4 GB) and killed when exceeded.
+- Starting a stream requires at least 10 GB free on the server; otherwise it fails with a `disk full` error after purging stale cache.
+- The library is bounded by `cache_limit_gb` (default 50 GB); downloads are deferred while over budget.

@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ import httpx
 from aiohttp import web
 
 from .config import PROVIDER_USER_AGENT
+from . import store
 from .library import LIBRARY_DIR
 from .ssdp import local_ipv4s
 
@@ -178,6 +180,7 @@ async def start_session(
         for old in _sessions.values():
             await _kill(old)
         _sessions.clear()
+        await _ensure_disk_space()
         session = ProxySession(
             token=uuid.uuid4().hex[:12], provider_url=provider_url, title=title,
             mode=mode, mime=mime, start_offset=start_offset, dest_rel=dest_rel, is_live=live,
@@ -276,8 +279,18 @@ async def _live_file_task(session: ProxySession) -> None:
 
 
 async def _session_watchdog(session: ProxySession) -> None:
+    cap = _session_max_bytes()
     while not session.done:
         await asyncio.sleep(30)
+        if session.path is not None and session.path.exists():
+            try:
+                size = sum(f.stat().st_size for f in session.path.rglob("*") if f.is_file()) if session.path.is_dir() else session.path.stat().st_size
+            except OSError:
+                size = 0
+            if size > cap:
+                logger.error("session %s exceeded the %.1f GB cap (%.1f GB) — killing", session.token, cap / 1024**3, size / 1024**3)
+                await _kill(session)
+                return
         limit = session.idle_timeout_s or 180
         if asyncio.get_running_loop().time() - session.last_client_seen > limit:
             logger.info("session idle (no client for %.0fs) — reaping: %s", limit, session.title)
@@ -352,6 +365,65 @@ async def _spawn_virtual_decoder(session: ProxySession, content_time: float, tra
 
 
 VIRTUAL_MAX_BYTES = 4 * 1024 ** 3
+MIN_FREE_BYTES = 10 * 1024 ** 3
+DEFAULT_SESSION_MAX_GB = 8.0
+
+
+def _disk_free(path: Path) -> int:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return 0
+
+
+def _session_max_bytes() -> int:
+    conn = store.connect()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key='session_max_gb'").fetchone()
+    finally:
+        conn.close()
+    try:
+        gb = float(row["value"]) if row and row["value"] else DEFAULT_SESSION_MAX_GB
+    except (TypeError, ValueError):
+        gb = DEFAULT_SESSION_MAX_GB
+    return int(gb * 1024 ** 3)
+
+
+def _purge_inactive_cache() -> int:
+    if not CACHE_DIR.exists():
+        return 0
+    active = {s.path.name for s in _sessions.values() if s.path is not None}
+    freed = 0
+    now = time.time()
+    for entry in list(CACHE_DIR.iterdir()):
+        if entry.name in active:
+            continue
+        try:
+            if now - entry.stat().st_mtime < 60:
+                continue
+            if entry.is_dir():
+                size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                size = entry.stat().st_size
+                entry.unlink(missing_ok=True)
+            freed += size
+        except OSError:
+            continue
+    return freed
+
+
+async def _ensure_disk_space() -> None:
+    base = CACHE_DIR if CACHE_DIR.exists() else Path(".")
+    free = _disk_free(base)
+    if free >= MIN_FREE_BYTES:
+        return
+    freed = _purge_inactive_cache()
+    free = _disk_free(base)
+    if freed:
+        logger.warning("purged %.1f GB of stale cache (free now %.1f GB)", freed / 1024**3, free / 1024**3)
+    if free < MIN_FREE_BYTES:
+        raise RuntimeError(f"disk full: {free / 1024**3:.1f} GB free (need {MIN_FREE_BYTES / 1024**3:.0f} GB)")
 
 
 async def _pump_decoder_to_file(session: ProxySession, proc: asyncio.subprocess.Process) -> None:
@@ -423,6 +495,7 @@ async def start_virtual_session(provider_url: str, title: str, transcode: bool, 
             if not old_session.done:
                 await _kill(old_session)
         _sessions.clear()
+        await _ensure_disk_space()
     token = uuid.uuid4().hex[:12]
     path = CACHE_DIR / f"virtual-{token}.ts"
     session = ProxySession(
@@ -497,6 +570,8 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
     avg_bps = (total / session.duration_s) if session.duration_s else 0.0
     session.stderr_log = (session.path.parent / f"ffmpeg-{session.token}.log").open("wb") if session.path else None
     respawn = 0
+    spawn_bytes = 0
+    zero_progress = 0
     last_target_s = session.start_offset
     while not session.done and session.feed_generation == my_generation:
         produced_s = (_file_size(session) / avg_bps) if avg_bps else 0.0
@@ -509,7 +584,7 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
         else:
             tail = await _probe_tail_time(session)
             if tail is not None:
-                target_s = last_target_s + tail
+                target_s = (last_target_s + tail) if spawn_bytes > 0 else last_target_s
             else:
                 end_byte = _file_size(session)
                 base_s, base_b = session.start_offset, 0
@@ -518,6 +593,8 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
                         base_s, base_b = t, b
                 produced_s = ((end_byte - base_b) / avg_bps) if avg_bps else 0.0
                 target_s = min(base_s + produced_s, (session.duration_s or 0) * 0.98)
+        if session.duration_s:
+            target_s = min(target_s, max(0.0, session.duration_s * 0.98))
         if transcode:
             codec_args = [
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -558,13 +635,22 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
         await proc.wait()
         if session.done:
             break
+        if session.duration_s and target_s >= session.duration_s * 0.97:
+            session.completed = True
+            logger.info("resume download complete (content end reached): %s", session.title[:40])
+            break
         expected = (total - session.resume_byte) if total else 0
         if expected and _file_size(session) >= expected * 0.99:
             session.completed = True
             logger.info("resume download complete: %s (%s bytes)", session.title, _file_size(session))
             break
         respawn += 1
+        zero_progress = zero_progress + 1 if spawn_bytes == 0 else 0
         logger.warning("resume ffmpeg exited early (respawn #%d) at %s bytes — target %.0fs for %s", respawn, _file_size(session), target_s, session.title[:40])
+        if zero_progress >= 3 or respawn >= 6:
+            logger.error("resume feed giving up for %s after %d respawns (%d without progress) — marking done", session.title[:40], respawn, zero_progress)
+            session.done = True
+            break
         await asyncio.sleep(min(20, 5 * respawn) if spawn_bytes == 0 else min(10, 2 * respawn))
     if session.stderr_log and not session.stderr_log.closed:
         session.stderr_log.close()

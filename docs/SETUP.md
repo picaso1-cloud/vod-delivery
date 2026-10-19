@@ -150,7 +150,18 @@ Smoke checks:
 - casting a short clip works
 - `GET /api/app/health` with the bearer token returns `{"ok":true}`
 
-## 9. Troubleshooting
+## 9. Disk & storage safety
+
+Streaming writes to `data/cache/streams/`; the library lives in `data/library/`.
+
+- **Startup sweep** — `data/cache/streams/` is emptied when the proxy starts (no stale files survive restarts).
+- **Session cap** — every session is checked every 30 s; above `session_max_gb` (setting, default **8 GB**) it is killed and its file deleted. The virtual feed additionally has a hard **4 GB** cap.
+- **Idle reap** — sessions with no client for 3 minutes (15 for link sessions) are killed and their files removed.
+- **Free-space guard** — a new stream requires **10 GB free**; if below, stale cache is purged first, and the stream is refused with `disk full` if space is still insufficient.
+- **Library budget** — `cache_limit_gb` (setting, default **50 GB**). While usage exceeds it, the download worker defers new downloads (nothing is auto-deleted).
+- **Low-disk alert** — the owner receives a Telegram warning when free space drops below 15 GB.
+
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -162,7 +173,7 @@ Smoke checks:
 | LLM returns empty content | Increase `max_tokens` (reasoning model) and keep the brevity instruction |
 | Index rebuild very slow | Embeddings are CPU-bound (~400 titles/s); keep the model cached in `HF_HOME` |
 
-## 10. Regenerate after data loss
+## 11. Regenerate after data loss
 
 Back up (minimum): `.env`, `data/vod.db`, `data/index.bin`, `data/library/`.
 
