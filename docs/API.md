@@ -55,7 +55,7 @@ All `POST` parameters are **query parameters** (`?key=value`), not a form or JSO
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| POST | `/api/app/stream` | `media_key`, `start_position` (s), `mode=cache\|virtual`, `quality=copy\|downgrade`, `prepare=1`, `format=mp4` | `{ok, token, title, mime, duration, mode, format, prepared, lan_url, public_url, path, expires_in}` |
+| POST | `/api/app/stream` | `media_key`, `start_position` (s), `mode=cache\|virtual`, `quality=copy\|downgrade`, `prepare=1`, `format=mp4`, `declare_current=0\|1` | `{ok, token, title, mime, duration, mode, format, prepared, lan_url, public_url, path, expires_in}` |
 | GET | `/api/app/session` | `token` | `{ok, mode, mime, position, duration, max_served, clients}` |
 | POST | `/api/app/control` | `token`, `action=stop\|seek`, `value` (s) | `{ok, detail?}` |
 
@@ -73,6 +73,12 @@ All `POST` parameters are **query parameters** (`?key=value`), not a form or JSO
   downloader starts on the first client GET. Use it while the user is still choosing.
 - `format=mp4` (with `mode=cache`) produces fragmented MP4 — required by the stock
   Chromecast receiver; MPEG-TS sessions are not server-seekable.
+- `declare_current=1` (default) declares the **current** file size. While the feed is
+  alive, a range request at the live edge blocks until new bytes arrive (up to 30 s)
+  and only returns `416` after the download completes — this keeps ExoPlayer and other
+  progressive players streaming a growing file.
+- `declare_current=0` declares the probed true total; use it when the client needs a
+  stable duration/size before playback.
 
 ## Receiver fallback page
 

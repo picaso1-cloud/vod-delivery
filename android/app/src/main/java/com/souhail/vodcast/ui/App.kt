@@ -94,6 +94,9 @@ fun VodApp(settings: Settings) {
     var lastTitle by remember { mutableStateOf("") }
     var pendingPlay by remember { mutableStateOf<PendingPlay?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    var searchSeries by remember { mutableStateOf(false) }
+    var searchResults by remember { mutableStateOf<List<MediaGroup>>(emptyList()) }
 
     LaunchedEffect(toast) {
         toast?.let {
@@ -151,6 +154,12 @@ fun VodApp(settings: Settings) {
                     SearchScreen(
                         api = client,
                         selectedTv = selectedTv,
+                        query = query,
+                        onQueryChange = { query = it },
+                        series = searchSeries,
+                        onSeriesChange = { searchSeries = it },
+                        results = searchResults,
+                        onResults = { searchResults = it },
                         onOpen = { screen = Screen.Detail(it) },
                     )
                 }
@@ -257,11 +266,18 @@ private fun SetupScreen(initialUrl: String, initialToken: String, onSave: (Strin
 }
 
 @Composable
-private fun SearchScreen(api: Api, selectedTv: TvInfo?, onOpen: (MediaGroup) -> Unit) {
+private fun SearchScreen(
+    api: Api,
+    selectedTv: TvInfo?,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    series: Boolean,
+    onSeriesChange: (Boolean) -> Unit,
+    results: List<MediaGroup>,
+    onResults: (List<MediaGroup>) -> Unit,
+    onOpen: (MediaGroup) -> Unit,
+) {
     val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
-    var series by remember { mutableStateOf(false) }
-    var results by remember { mutableStateOf<List<MediaGroup>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -269,7 +285,7 @@ private fun SearchScreen(api: Api, selectedTv: TvInfo?, onOpen: (MediaGroup) -> 
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = onQueryChange,
                 label = { Text("Search movies / series") },
                 singleLine = true,
                 modifier = Modifier.weight(1f),
@@ -281,7 +297,7 @@ private fun SearchScreen(api: Api, selectedTv: TvInfo?, onOpen: (MediaGroup) -> 
                         loading = true
                         error = null
                         try {
-                            results = api.search(query, if (series) "series" else "movie")
+                            onResults(api.search(query, if (series) "series" else "movie"))
                         } catch (e: Exception) {
                             error = e.message
                         } finally {
@@ -293,7 +309,7 @@ private fun SearchScreen(api: Api, selectedTv: TvInfo?, onOpen: (MediaGroup) -> 
             ) { Text("Search") }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = series, onCheckedChange = { series = it })
+            Checkbox(checked = series, onCheckedChange = onSeriesChange)
             Text("Series")
             Spacer(Modifier.width(16.dp))
             Text(
@@ -507,13 +523,20 @@ private fun PlayDialog(
             busy = true
             error = null
             try {
-                prepared = api.stream(
+                val effectiveQuality = when (target) {
+                    "cast" -> "copy"
+                    "player" -> "downgrade"
+                    else -> quality
+                }
+                val info = api.stream(
                     mediaKey = pending.mediaKey,
                     mode = "cache",
-                    quality = if (target == "cast") "copy" else quality,
+                    quality = effectiveQuality,
                     prepare = true,
                     format = if (target == "cast") "mp4" else null,
                 )
+                prepared = info
+                usePublic = target != "dlna" && info.public_url != null
             } catch (e: Exception) {
                 error = e.message
             } finally {
@@ -582,7 +605,7 @@ private fun PlayDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Target", style = MaterialTheme.typography.labelLarge)
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    listOf("dlna" to "DLNA TV", "player" to "Phone", "cast" to "Chromecast").forEachIndexed { index, (value, label) ->
+                    listOf("dlna" to "DLNA TV", "player" to "Phone", "cast" to "Cast").forEachIndexed { index, (value, label) ->
                         SegmentedButton(
                             selected = target == value,
                             onClick = { target = value; prepared = null },
@@ -597,7 +620,13 @@ private fun PlayDialog(
                 if (target == "dlna" && selectedTv == null) {
                     TextButton(onClick = onPickTv) { Text("Pick a TV") }
                 }
-                if (target != "cast") {
+                if (target == "player") {
+                    Text(
+                        "Phone plays the 1080p H.264/AAC transcode (MKV cannot stream progressively).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (target != "cast" && target != "player") {
                     Text("Quality", style = MaterialTheme.typography.labelLarge)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = quality == "copy", onCheckedChange = { quality = "copy"; prepared = null })

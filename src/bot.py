@@ -2995,7 +2995,8 @@ async def main() -> None:
         return {"ok": state == "PLAYING" or served > 0, "state": state, "token": session_obj.token, "file": path.name, "tv_bytes": served}
 
     async def api_app_stream(media_key: str, start_position: float = 0.0, mode: str = "cache",
-                             quality: str = "copy", prepare: int = 0, format: str = "") -> dict:
+                             quality: str = "copy", prepare: int = 0, format: str = "",
+                             declare_current: int = 1) -> dict:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
@@ -3025,7 +3026,7 @@ async def main() -> None:
                     mode=actual_mode,
                     mime=mime,
                     start_offset=float(start_position or 0.0),
-                    declare_current=True,
+                    declare_current=bool(declare_current),
                     deferred=deferred,
                 )
         except Exception as exc:
@@ -3033,7 +3034,7 @@ async def main() -> None:
         from . import urlsign
 
         duration = s.duration_s or 0.0
-        if not duration:
+        if not duration and not deferred:
             try:
                 duration = (await probe_duration(payload["url"])) or 0.0
                 s.duration_s = duration

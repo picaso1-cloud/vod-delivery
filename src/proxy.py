@@ -207,9 +207,10 @@ async def start_session(
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         session.live_file = CACHE_DIR / f"{session.token}.ts"
     if mode.startswith("cache"):
-        session.total = await _probe_total(provider_url)
+        if not (deferred and declare_current and start_offset <= 0):
+            session.total = await _probe_total(provider_url)
         session.seek_marks.append((0, start_offset))
-        if mode in ("cache_downgrade", "cache_mp4"):
+        if mode in ("cache_downgrade", "cache_mp4") and not deferred:
             session.duration_s = await _probe_duration(provider_url)
             if session.duration_s > 0:
                 session.total = int(session.duration_s * 550_000)
@@ -1052,7 +1053,15 @@ async def _serve_cache(request, session: ProxySession):
     if session.declare_current:
         declared_total = max(1, _file_size(session))
     if start >= declared_total:
-        return web.Response(status=416, headers={"Content-Range": f"bytes */{declared_total}"})
+        if session.declare_current and not session.completed and not session.done:
+            edge_deadline = asyncio.get_running_loop().time() + 30
+            while start >= _file_size(session) and not session.completed and not session.done:
+                if asyncio.get_running_loop().time() > edge_deadline:
+                    break
+                await asyncio.sleep(0.25)
+            declared_total = max(1, _file_size(session))
+        if start >= declared_total:
+            return web.Response(status=416, headers={"Content-Range": f"bytes */{declared_total}"})
     if (not session.declare_current) and session.mode in ("virtual", "cache_downgrade") and start >= _file_size(session):
         sliver = b""
         try:
