@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.mediarouter.app.MediaRouteButton
+import coil.compose.AsyncImage
 import com.google.android.gms.cast.framework.CastButtonFactory
 import com.souhail.vodcast.cast.CastCaster
 import com.souhail.vodcast.cast.DlnaCaster
@@ -310,6 +311,13 @@ private fun SearchScreen(api: Api, selectedTv: TvInfo?, onOpen: (MediaGroup) -> 
                     modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { onOpen(group) },
                 ) {
                     ListItem(
+                        leadingContent = {
+                            AsyncImage(
+                                model = group.poster,
+                                contentDescription = null,
+                                modifier = Modifier.width(48.dp).height(72.dp),
+                            )
+                        },
                         headlineContent = { Text(group.title, fontWeight = FontWeight.SemiBold) },
                         supportingContent = {
                             val langs = group.variants.mapNotNull { it.lang }.distinct().joinToString("/")
@@ -348,6 +356,9 @@ private fun DetailScreen(group: MediaGroup, api: Api, onPlay: (String, String) -
             listOfNotNull(group.year?.toString(), "score %.2f".format(group.score)).joinToString(" · "),
             style = MaterialTheme.typography.bodyMedium,
         )
+        group.plot?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+        }
         Spacer(Modifier.height(12.dp))
         if (group.kind == "series") {
             val data = episodes

@@ -2685,6 +2685,7 @@ async def main() -> None:
         for g in groups:
             out.append({
                 "kind": g.kind, "title": g.title, "year": g.year, "score": round(g.best_score, 2),
+                "poster": g.poster, "plot": g.plot,
                 "variants": [
                     {"media_key": f"movie:{v.ref_id}" if g.kind == "movie" else f"series:{v.ref_id}",
                      "lang": v.lang, "ext": v.ext}
