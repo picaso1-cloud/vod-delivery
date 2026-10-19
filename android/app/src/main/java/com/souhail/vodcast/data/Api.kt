@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 class Api(private val baseUrl: String, private val token: String) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
@@ -79,6 +79,19 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun session(token: String): SessionInfo =
         json.decodeFromString(exec("api/app/session", mapOf("token" to token)))
+
+    suspend fun liveCategories(): List<LiveCategory> =
+        json.decodeFromString(exec("api/app/live/categories"))
+
+    suspend fun live(q: String = "", categoryId: Int = 0): List<LiveChannel> =
+        json.decodeFromString(
+            exec("api/app/live", mapOf("q" to q, "category_id" to categoryId.toString()))
+        )
+
+    suspend fun liveStream(channelId: Int): StreamInfo =
+        json.decodeFromString(
+            exec("api/app/live/stream", mapOf("channel_id" to channelId.toString()), post = true)
+        )
 
     suspend fun control(token: String, action: String, value: Double = 0.0): ControlResult =
         json.decodeFromString(

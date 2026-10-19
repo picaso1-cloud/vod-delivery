@@ -549,8 +549,20 @@ async def app_health():
 
 
 @app.get("/api/app/live", dependencies=[Depends(_app_auth)])
-async def app_live(q: str = ""):
-    return call_bridge("search", q, "live")
+async def app_live(q: str = "", category_id: int = 0):
+    return call_bridge("live_list", q, int(category_id))
+
+
+@app.get("/api/app/live/categories", dependencies=[Depends(_app_auth)])
+async def app_live_categories():
+    return call_bridge("live_categories")
+
+
+@app.post("/api/app/live/stream", dependencies=[Depends(_app_auth)])
+async def app_live_stream(channel_id: int = 0):
+    if not channel_id:
+        raise HTTPException(status_code=422, detail="channel_id required")
+    return call_bridge("live_stream", int(channel_id), timeout=120.0)
 
 
 @app.post("/api/app/play", dependencies=[Depends(_app_auth)])

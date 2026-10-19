@@ -14,17 +14,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +63,8 @@ import com.souhail.vodcast.cast.DlnaDevice
 import com.souhail.vodcast.data.Api
 import com.souhail.vodcast.data.CastMethod
 import com.souhail.vodcast.data.EpisodesResponse
+import com.souhail.vodcast.data.LiveCategory
+import com.souhail.vodcast.data.LiveChannel
 import com.souhail.vodcast.data.MediaGroup
 import com.souhail.vodcast.data.SessionInfo
 import com.souhail.vodcast.data.Settings
@@ -77,7 +82,7 @@ sealed class Screen {
     data object Remote : Screen()
 }
 
-private data class PendingPlay(val mediaKey: String, val title: String)
+private data class PendingPlay(val mediaKey: String, val title: String, val isLive: Boolean = false)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,6 +92,7 @@ fun VodApp(settings: Settings) {
     var api by remember {
         mutableStateOf(if (settings.configured) Api(settings.baseUrl, settings.token) else null)
     }
+    var usingLan by remember { mutableStateOf(settings.usingLan) }
     var screen by remember { mutableStateOf<Screen>(if (settings.configured) Screen.Search else Screen.Setup) }
     var selectedTv by remember { mutableStateOf<TvInfo?>(null) }
     var lastStream by remember { mutableStateOf<StreamInfo?>(null) }
@@ -94,9 +100,12 @@ fun VodApp(settings: Settings) {
     var lastTitle by remember { mutableStateOf("") }
     var pendingPlay by remember { mutableStateOf<PendingPlay?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
+
     var query by remember { mutableStateOf("") }
-    var searchSeries by remember { mutableStateOf(false) }
+    var contentType by remember { mutableStateOf("movie") }
     var searchResults by remember { mutableStateOf<List<MediaGroup>>(emptyList()) }
+    var liveResults by remember { mutableStateOf<List<LiveChannel>>(emptyList()) }
+    var selectedCategory by remember { mutableStateOf(0) }
 
     LaunchedEffect(toast) {
         toast?.let {
@@ -108,7 +117,15 @@ fun VodApp(settings: Settings) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (screen is Screen.Setup) "Connect to VOD" else "VOD Cast") },
+                title = {
+                    Text(
+                        when {
+                            screen is Screen.Setup -> "Connect to VOD"
+                            contentType == "live" && screen is Screen.Search -> "Live TV"
+                            else -> "VOD Cast"
+                        }
+                    )
+                },
                 navigationIcon = {
                     if (screen !is Screen.Setup && screen !is Screen.Search) {
                         IconButton(onClick = { screen = Screen.Search }) {
@@ -117,10 +134,21 @@ fun VodApp(settings: Settings) {
                     }
                 },
                 actions = {
+                    if (screen !is Screen.Setup) {
+                        Text(
+                            if (usingLan) "LAN" else "PUBLIC",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
+                    }
                     AndroidView(factory = { ctx ->
                         MediaRouteButton(ctx).also { CastButtonFactory.setUpMediaRouteButton(ctx, it) }
                     })
                     if (screen !is Screen.Setup) {
+                        IconButton(onClick = { screen = Screen.Setup }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Setup")
+                        }
                         TextButton(onClick = { screen = Screen.Tvs }) { Text("TVs") }
                     }
                     if (lastStream != null && screen !is Screen.Remote) {
@@ -133,20 +161,41 @@ fun VodApp(settings: Settings) {
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (val current = screen) {
                 Screen.Setup -> SetupScreen(
-                    initialUrl = settings.baseUrl,
+                    initialLan = settings.lanUrl,
+                    initialPublic = settings.publicUrl,
                     initialToken = settings.token,
-                ) { url, token ->
+                ) { lan, pub, token ->
                     scope.launch {
+                        var chosen: Api? = null
+                        var lanOk = false
                         try {
-                            val candidate = Api(url, token)
+                            val candidate = Api(lan, token)
                             candidate.config()
-                            settings.baseUrl = url
-                            settings.token = token
-                            api = candidate
-                            screen = Screen.Search
-                        } catch (e: Exception) {
-                            toast = "Connection failed: ${e.message}"
+                            chosen = candidate
+                            lanOk = true
+                        } catch (_: Exception) {
                         }
+                        if (chosen == null && pub.isNotBlank()) {
+                            try {
+                                val candidate = Api(pub, token)
+                                candidate.config()
+                                chosen = candidate
+                            } catch (_: Exception) {
+                            }
+                        }
+                        if (chosen == null) {
+                            toast = "Cannot reach either URL — check the server and token"
+                            return@launch
+                        }
+                        settings.lanUrl = lan
+                        settings.publicUrl = pub
+                        settings.baseUrl = if (lanOk) lan else pub
+                        settings.token = token
+                        settings.usingLan = lanOk
+                        api = chosen
+                        usingLan = lanOk
+                        screen = Screen.Search
+                        toast = if (lanOk) "Connected over LAN" else "Connected over public URL"
                     }
                 }
 
@@ -154,13 +203,18 @@ fun VodApp(settings: Settings) {
                     SearchScreen(
                         api = client,
                         selectedTv = selectedTv,
+                        contentType = contentType,
+                        onContentType = { contentType = it },
                         query = query,
                         onQueryChange = { query = it },
-                        series = searchSeries,
-                        onSeriesChange = { searchSeries = it },
                         results = searchResults,
                         onResults = { searchResults = it },
+                        liveResults = liveResults,
+                        onLiveResults = { liveResults = it },
+                        selectedCategory = selectedCategory,
+                        onCategory = { selectedCategory = it },
                         onOpen = { screen = Screen.Detail(it) },
+                        onOpenLive = { pendingPlay = PendingPlay("live:${it.channel_id}", it.title, true) },
                     )
                 }
 
@@ -213,6 +267,7 @@ fun VodApp(settings: Settings) {
             api = api!!,
             pending = play,
             selectedTv = selectedTv,
+            usingLan = usingLan,
             onPickTv = {
                 pendingPlay = null
                 screen = Screen.Tvs
@@ -231,23 +286,36 @@ fun VodApp(settings: Settings) {
 }
 
 @Composable
-private fun SetupScreen(initialUrl: String, initialToken: String, onSave: (String, String) -> Unit) {
-    var url by remember { mutableStateOf(initialUrl.ifBlank { "http://192.168.1.240:8095" }) }
+private fun SetupScreen(
+    initialLan: String,
+    initialPublic: String,
+    initialToken: String,
+    onSave: (String, String, String) -> Unit,
+) {
+    var lan by remember { mutableStateOf(initialLan.ifBlank { "http://192.168.1.240:8095" }) }
+    var pub by remember { mutableStateOf(initialPublic.ifBlank { "https://vod.allocamera.com" }) }
     var token by remember { mutableStateOf(initialToken) }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Server", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "LAN: http://<server-ip>:8095\nPublic: https://vod.allocamera.com\n\n" +
+            "The app tries the LAN URL first and falls back to the public URL. " +
                 "The token is the app_token setting on the server.",
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
         )
         OutlinedTextField(
-            value = url,
-            onValueChange = { url = it },
-            label = { Text("Server URL") },
+            value = lan,
+            onValueChange = { lan = it },
+            label = { Text("LAN URL") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = pub,
+            onValueChange = { pub = it },
+            label = { Text("Public URL (optional)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -259,8 +327,8 @@ private fun SetupScreen(initialUrl: String, initialToken: String, onSave: (Strin
             modifier = Modifier.fillMaxWidth(),
         )
         Button(
-            onClick = { onSave(url.trim().trimEnd('/'), token.trim()) },
-            enabled = url.isNotBlank() && token.isNotBlank(),
+            onClick = { onSave(lan.trim().trimEnd('/'), pub.trim().trimEnd('/'), token.trim()) },
+            enabled = lan.isNotBlank() && token.isNotBlank(),
         ) { Text("Connect") }
     }
 }
@@ -269,81 +337,145 @@ private fun SetupScreen(initialUrl: String, initialToken: String, onSave: (Strin
 private fun SearchScreen(
     api: Api,
     selectedTv: TvInfo?,
+    contentType: String,
+    onContentType: (String) -> Unit,
     query: String,
     onQueryChange: (String) -> Unit,
-    series: Boolean,
-    onSeriesChange: (Boolean) -> Unit,
     results: List<MediaGroup>,
     onResults: (List<MediaGroup>) -> Unit,
+    liveResults: List<LiveChannel>,
+    onLiveResults: (List<LiveChannel>) -> Unit,
+    selectedCategory: Int,
+    onCategory: (Int) -> Unit,
     onOpen: (MediaGroup) -> Unit,
+    onOpenLive: (LiveChannel) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var categories by remember { mutableStateOf<List<LiveCategory>>(emptyList()) }
+
+    fun runSearch(category: Int = selectedCategory) {
+        scope.launch {
+            loading = true
+            error = null
+            try {
+                if (contentType == "live") {
+                    onLiveResults(api.live(query, category))
+                } else {
+                    onResults(api.search(query, contentType))
+                }
+            } catch (e: Exception) {
+                error = e.message
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    LaunchedEffect(contentType) {
+        if (contentType == "live" && categories.isEmpty()) {
+            try {
+                categories = api.liveCategories()
+            } catch (e: Exception) {
+                error = e.message
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            listOf("movie" to "Movies", "series" to "Shows", "live" to "Live TV")
+                .forEachIndexed { index, (value, label) ->
+                    SegmentedButton(
+                        selected = contentType == value,
+                        onClick = { onContentType(value) },
+                        shape = SegmentedButtonDefaults.itemShape(index, 3),
+                    ) { Text(label) }
+                }
+        }
+        Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
-                label = { Text("Search movies / series") },
+                label = { Text(if (contentType == "live") "Search channels" else "Search titles") },
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(8.dp))
-            Button(
-                onClick = {
-                    scope.launch {
-                        loading = true
-                        error = null
-                        try {
-                            onResults(api.search(query, if (series) "series" else "movie"))
-                        } catch (e: Exception) {
-                            error = e.message
-                        } finally {
-                            loading = false
-                        }
-                    }
-                },
-                enabled = query.isNotBlank() && !loading,
-            ) { Text("Search") }
+            Button(onClick = { runSearch() }, enabled = !loading) { Text("Search") }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = series, onCheckedChange = onSeriesChange)
-            Text("Series")
-            Spacer(Modifier.width(16.dp))
             Text(
                 selectedTv?.let { "TV: ${it.name}" } ?: "No TV selected (open TVs)",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        if (contentType == "live" && categories.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                item {
+                    FilterChip(
+                        selected = selectedCategory == 0,
+                        onClick = { onCategory(0); runSearch(0) },
+                        label = { Text("All") },
+                    )
+                }
+                items(categories) { category ->
+                    FilterChip(
+                        selected = selectedCategory == category.id,
+                        onClick = { onCategory(category.id); runSearch(category.id) },
+                        label = { Text("${category.name} (${category.count})") },
+                    )
+                }
+            }
+        }
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
         error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
-        LazyColumn(Modifier.fillMaxSize()) {
-            items(results) { group ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { onOpen(group) },
-                ) {
+        if (contentType == "live") {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(liveResults) { channel ->
                     ListItem(
                         leadingContent = {
                             AsyncImage(
-                                model = group.poster,
+                                model = channel.icon,
                                 contentDescription = null,
-                                modifier = Modifier.width(48.dp).height(72.dp),
+                                modifier = Modifier.width(44.dp).height(32.dp),
                             )
                         },
-                        headlineContent = { Text(group.title, fontWeight = FontWeight.SemiBold) },
-                        supportingContent = {
-                            val langs = group.variants.mapNotNull { it.lang }.distinct().joinToString("/")
-                            Text(
-                                listOfNotNull(group.year?.toString(), langs.ifBlank { null }, "%.2f".format(group.score))
-                                    .joinToString(" · ")
-                            )
-                        },
-                        trailingContent = { Text(group.kind) },
+                        headlineContent = { Text(channel.title, fontWeight = FontWeight.SemiBold) },
+                        supportingContent = { Text("channel ${channel.channel_id}") },
+                        modifier = Modifier.clickable { onOpenLive(channel) },
                     )
+                }
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(results) { group ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { onOpen(group) },
+                    ) {
+                        ListItem(
+                            leadingContent = {
+                                AsyncImage(
+                                    model = group.poster,
+                                    contentDescription = null,
+                                    modifier = Modifier.width(48.dp).height(72.dp),
+                                )
+                            },
+                            headlineContent = { Text(group.title, fontWeight = FontWeight.SemiBold) },
+                            supportingContent = {
+                                val langs = group.variants.mapNotNull { it.lang }.distinct().joinToString("/")
+                                Text(
+                                    listOfNotNull(group.year?.toString(), langs.ifBlank { null }, "%.2f".format(group.score))
+                                        .joinToString(" · ")
+                                )
+                            },
+                            trailingContent = { Text(group.kind) },
+                        )
+                    }
                 }
             }
         }
@@ -456,7 +588,13 @@ private fun TvScreen(
                 ListItem(
                     headlineContent = { Text(tv.name, fontWeight = FontWeight.SemiBold) },
                     supportingContent = {
-                        Text(listOfNotNull(tv.ip, tv.kind, tv.prefer_proxy.takeIf { it == 1 }?.let { "proxy" }).joinToString(" · "))
+                        Text(
+                            listOfNotNull(
+                                tv.ip,
+                                tv.kind,
+                                tv.prefer_proxy.takeIf { it == 1 }?.let { "proxy" },
+                            ).joinToString(" · ")
+                        )
                     },
                     trailingContent = {
                         TextButton(onClick = {
@@ -472,7 +610,11 @@ private fun TvScreen(
                     modifier = Modifier.clickable { onSelect(tv) },
                 )
                 if (selected?.name == tv.name) {
-                    Text("selected", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 16.dp))
+                    Text(
+                        "selected",
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
                 }
                 methods[tv.name]?.let { list ->
                     Text(
@@ -484,7 +626,13 @@ private fun TvScreen(
                 HorizontalDivider()
             }
             if (devices.isNotEmpty()) {
-                item { Text("Discovered on this network", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp)) }
+                item {
+                    Text(
+                        "Discovered on this network",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
                 items(devices) { device ->
                     ListItem(
                         headlineContent = { Text(device.name) },
@@ -504,6 +652,7 @@ private fun PlayDialog(
     api: Api,
     pending: PendingPlay,
     selectedTv: TvInfo?,
+    usingLan: Boolean,
     onPickTv: () -> Unit,
     onStart: (StreamInfo, DlnaDevice?, String) -> Unit,
     onDismiss: () -> Unit,
@@ -513,7 +662,7 @@ private fun PlayDialog(
     val context = LocalContext.current
     var target by remember { mutableStateOf("dlna") }
     var quality by remember { mutableStateOf("copy") }
-    var usePublic by remember { mutableStateOf(false) }
+    var usePublic by remember { mutableStateOf(!usingLan) }
     var prepared by remember { mutableStateOf<StreamInfo?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -523,20 +672,24 @@ private fun PlayDialog(
             busy = true
             error = null
             try {
-                val effectiveQuality = when (target) {
-                    "cast" -> "copy"
-                    "player" -> "downgrade"
-                    else -> quality
+                val info = if (pending.isLive) {
+                    api.liveStream(pending.mediaKey.removePrefix("live:").toInt())
+                } else {
+                    val effectiveQuality = when (target) {
+                        "cast" -> "copy"
+                        "player" -> "downgrade"
+                        else -> quality
+                    }
+                    api.stream(
+                        mediaKey = pending.mediaKey,
+                        mode = "cache",
+                        quality = effectiveQuality,
+                        prepare = true,
+                        format = if (target == "cast") "mp4" else null,
+                    )
                 }
-                val info = api.stream(
-                    mediaKey = pending.mediaKey,
-                    mode = "cache",
-                    quality = effectiveQuality,
-                    prepare = true,
-                    format = if (target == "cast") "mp4" else null,
-                )
                 prepared = info
-                usePublic = target != "dlna" && info.public_url != null
+                usePublic = !usingLan
             } catch (e: Exception) {
                 error = e.message
             } finally {
@@ -562,8 +715,9 @@ private fun PlayDialog(
                 onStart(stream, null, pending.title)
             }
             "cast" -> {
+                val contentType = if (pending.isLive) "video/mp2t" else "video/mp4"
                 val message = runCatching {
-                    CastCaster.load(context, url, pending.title, "video/mp4")
+                    CastCaster.load(context, url, pending.title, contentType)
                 }.getOrElse { "Cast failed: ${it.message}" }
                 notify(message)
                 onStart(stream, null, pending.title)
@@ -600,18 +754,26 @@ private fun PlayDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(pending.title) },
+        title = {
+            Column {
+                Text(pending.title)
+                if (pending.isLive) {
+                    Text("LIVE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Target", style = MaterialTheme.typography.labelLarge)
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    listOf("dlna" to "DLNA TV", "player" to "Phone", "cast" to "Cast").forEachIndexed { index, (value, label) ->
-                        SegmentedButton(
-                            selected = target == value,
-                            onClick = { target = value; prepared = null },
-                            shape = SegmentedButtonDefaults.itemShape(index, 3),
-                        ) { Text(label) }
-                    }
+                    listOf("dlna" to "DLNA TV", "player" to "Phone", "cast" to "Cast")
+                        .forEachIndexed { index, (value, label) ->
+                            SegmentedButton(
+                                selected = target == value,
+                                onClick = { target = value; prepared = null },
+                                shape = SegmentedButtonDefaults.itemShape(index, 3),
+                            ) { Text(label) }
+                        }
                 }
                 Text(
                     selectedTv?.let { "TV: ${it.name} (${it.kind})" } ?: "No TV selected",
@@ -620,21 +782,34 @@ private fun PlayDialog(
                 if (target == "dlna" && selectedTv == null) {
                     TextButton(onClick = onPickTv) { Text("Pick a TV") }
                 }
-                if (target == "player") {
+                if (!pending.isLive) {
+                    if (target == "player") {
+                        Text(
+                            "Phone plays the 1080p H.264/AAC transcode (MKV cannot stream progressively).",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (target != "cast" && target != "player") {
+                        Text("Quality", style = MaterialTheme.typography.labelLarge)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = quality == "copy",
+                                onCheckedChange = { quality = "copy"; prepared = null },
+                            )
+                            Text("Copy (fast)")
+                            Spacer(Modifier.width(12.dp))
+                            Checkbox(
+                                checked = quality == "downgrade",
+                                onCheckedChange = { quality = "downgrade"; prepared = null },
+                            )
+                            Text("1080p transcode")
+                        }
+                    }
+                } else {
                     Text(
-                        "Phone plays the 1080p H.264/AAC transcode (MKV cannot stream progressively).",
+                        "Live channels are non-seekable and use the server's live TS feed.",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                }
-                if (target != "cast" && target != "player") {
-                    Text("Quality", style = MaterialTheme.typography.labelLarge)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = quality == "copy", onCheckedChange = { quality = "copy"; prepared = null })
-                        Text("Copy (fast)")
-                        Spacer(Modifier.width(12.dp))
-                        Checkbox(checked = quality == "downgrade", onCheckedChange = { quality = "downgrade"; prepared = null })
-                        Text("1080p transcode")
-                    }
                 }
                 if (prepared == null) {
                     Button(onClick = { prepare() }, enabled = !busy) { Text("Prepare link") }
@@ -683,6 +858,7 @@ private fun RemoteScreen(
     val context = LocalContext.current
     var session by remember { mutableStateOf<SessionInfo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    val isLive = stream.mode == "live"
 
     LaunchedEffect(stream.token) {
         val token = stream.token ?: return@LaunchedEffect
@@ -698,40 +874,53 @@ private fun RemoteScreen(
     }
 
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(title, style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, style = MaterialTheme.typography.headlineSmall)
+            if (isLive) {
+                Spacer(Modifier.width(8.dp))
+                Text("LIVE", color = MaterialTheme.colorScheme.primary)
+            }
+        }
         Text("session ${stream.token} · ${stream.mode}/${stream.format}", style = MaterialTheme.typography.bodySmall)
         val current = session
         if (current?.ok == true) {
+            if (!isLive) {
+                Text(
+                    "position ${current.position?.toInt() ?: 0}s / ${current.duration?.toInt() ?: 0}s",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
             Text(
-                "position ${current.position?.toInt() ?: 0}s / ${current.duration?.toInt() ?: 0}s",
-                style = MaterialTheme.typography.titleMedium,
+                if (isLive) "streaming · clients ${current.clients}"
+                else "served ${"%.1f".format((current.max_served ?: 0L) / 1_048_576.0)} MB · clients ${current.clients}"
             )
-            Text("served ${"%.1f".format((current.max_served ?: 0L) / 1_048_576.0)} MB · clients ${current.clients}")
         } else {
             Text(current?.error ?: "waiting for session…")
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val token = stream.token
-            Button(onClick = {
-                if (token != null) scope.launch {
-                    try {
-                        val pos = (session?.position ?: 0.0) - 30.0
-                        api.control(token, "seek", maxOf(0.0, pos))
-                    } catch (e: Exception) {
-                        notify(e.message ?: "seek failed")
+        if (!isLive) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val token = stream.token
+                Button(onClick = {
+                    if (token != null) scope.launch {
+                        try {
+                            val pos = (session?.position ?: 0.0) - 30.0
+                            api.control(token, "seek", maxOf(0.0, pos))
+                        } catch (e: Exception) {
+                            notify(e.message ?: "seek failed")
+                        }
                     }
-                }
-            }) { Text("-30s") }
-            Button(onClick = {
-                if (token != null) scope.launch {
-                    try {
-                        val pos = (session?.position ?: 0.0) + 30.0
-                        api.control(token, "seek", pos)
-                    } catch (e: Exception) {
-                        notify(e.message ?: "seek failed")
+                }) { Text("-30s") }
+                Button(onClick = {
+                    if (token != null) scope.launch {
+                        try {
+                            val pos = (session?.position ?: 0.0) + 30.0
+                            api.control(token, "seek", pos)
+                        } catch (e: Exception) {
+                            notify(e.message ?: "seek failed")
+                        }
                     }
-                }
-            }) { Text("+30s") }
+                }) { Text("+30s") }
+            }
         }
         Button(onClick = {
             scope.launch {

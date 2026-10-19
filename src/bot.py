@@ -3077,6 +3077,46 @@ async def main() -> None:
             return {"ok": bool(ok), "detail": detail}
         return {"ok": False, "error": f"unsupported action {action}"}
 
+    async def api_live_categories() -> list:
+        cats = await provider.live_categories()
+        streams = await provider.live_streams()
+        counts: dict[int, int] = {}
+        for s in streams:
+            cid = int(s.get("category_id") or 0)
+            counts[cid] = counts.get(cid, 0) + 1
+        return [
+            {"id": int(c.get("category_id") or 0), "name": c.get("category_name") or "?",
+             "count": counts.get(int(c.get("category_id") or 0), 0)}
+            for c in cats
+        ]
+
+    async def api_live_list(q: str = "", category_id: int = 0) -> list:
+        streams = await provider.live_streams(category_id or None)
+        ql = (q or "").lower().strip()
+        hits = [s for s in streams if ql in (s.get("name") or "").lower()] if ql else streams
+        return [
+            {"kind": "live", "channel_id": int(s["stream_id"]), "title": s.get("name") or "",
+             "category_id": int(s.get("category_id") or 0), "icon": s.get("stream_icon")}
+            for s in hits[:200]
+        ]
+
+    async def api_live_stream(channel_id: int) -> dict:
+        from . import urlsign
+        streams = await provider.live_streams()
+        ch = next((c for c in streams if int(c.get("stream_id", 0)) == channel_id), None)
+        if ch is None:
+            return {"ok": False, "error": "channel not found"}
+        title = ch.get("name") or f"live {channel_id}"
+        try:
+            s = await proxy.start_session(provider.live_url(channel_id), title,
+                                          mode="copy", mime="video/mpeg", live=True)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        lan_ip = proxy.lan_ip_for("192.168.1.1")
+        urls = urlsign.urls_for(s.token, lan_ip, ext="ts")
+        return {"ok": True, "token": s.token, "title": title, "mime": "video/mpeg",
+                "mode": "live", "duration": 0.0, "start_offset": 0.0, **urls}
+
     async def api_app_config() -> dict:
         import socket
         from . import urlsign
@@ -3157,7 +3197,8 @@ async def main() -> None:
              tvs=api_tvs, play=api_play, live_play=api_live_play, control=api_control, status=api_status,
              test_virtual=api_test_virtual,
              app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control,
-             app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe)
+             app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
+             live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream)
 
     @dp.message(Command("audit"))
     async def cmd_audit(message: Message) -> None:

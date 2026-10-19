@@ -38,9 +38,12 @@ sdk.dir=/path/to/Android/Sdk
    .venv/bin/python -c "from src import urlsign; print(urlsign.app_token())"
    ```
 
-2. Open the app → **Server URL**:
-   - at home: `http://192.168.1.240:8095`
-   - away: `https://vod.allocamera.com`
+2. Open the app → enter both:
+   - **LAN URL**: `http://192.168.1.240:8095`
+   - **Public URL**: `https://vod.allocamera.com`
+
+   The app probes the LAN URL first and falls back to the public one. The active
+   route is shown in the top bar (`LAN` / `PUBLIC`); the gear icon reopens setup.
 3. Paste the token → **Connect**.
 4. **TVs** → pick a registered TV (or **Discover DLNA**), then search and play.
 
@@ -50,6 +53,9 @@ sdk.dir=/path/to/Android/Sdk
 |---|---|
 | connect | `GET /api/app/config` |
 | search | `GET /api/app/search?q=&type=movie\|series` |
+| live categories | `GET /api/app/live/categories` → `[{id,name,count}]` |
+| live channels | `GET /api/app/live?q=&category_id=` → `[{channel_id,title,icon}]` |
+| live stream | `POST /api/app/live/stream?channel_id=` → `{token,lan_url,public_url,mime,mode:"live"}` |
 | episodes | `GET /api/app/episodes?series_id=` → `items[season][].media_key` |
 | list TVs | `GET /api/app/tvs` |
 | TV capabilities | `GET /api/app/tvs/detail?name=` |
@@ -90,8 +96,8 @@ android/app/src/main/java/com/souhail/vodcast/
 
 ## Known gaps (next agent)
 
-1. **Posters** — search results have no poster URL yet. Add `poster` to
-   `/api/app/search` (from `movies.poster`) and render it with Coil.
+1. **Live TV on Chromecast** — the default receiver does not play MPEG-TS; live
+   works on DLNA TVs and the phone. A custom Cast receiver (HLS/fMP4) fixes it.
 2. **Pause/resume** — the app API exposes `stop` and `seek` only. Add
    `pause`/`resume` for server-side casts (`/api/app/play`) or DLNA control.
 3. **Probe UI** — method badges are shown, but method selection is automatic
@@ -126,3 +132,6 @@ android/app/src/main/java/com/souhail/vodcast/
 - The app requires an **AppCompat theme** (`Theme.AppCompat.DayNight.NoActionBar`):
   `MediaRouteButton` reads AppCompat's `colorPrimary` and crashes with
   `background can not be translucent: #0` on a framework-only theme.
+- Live TV verified server-side: 176 categories, 63 channels in the first
+  category, `POST /api/app/live/stream` returns a signed `.ts` URL, the live
+  feed served 256 KB with `Accept-Ranges: none` and stopped cleanly.

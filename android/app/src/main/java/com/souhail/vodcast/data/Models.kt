@@ -122,3 +122,19 @@ data class ControlResult(
     val detail: String? = null,
     val error: String? = null,
 )
+
+@Serializable
+data class LiveCategory(
+    val id: Int = 0,
+    val name: String = "",
+    val count: Int = 0,
+)
+
+@Serializable
+data class LiveChannel(
+    val kind: String = "live",
+    val channel_id: Int = 0,
+    val title: String = "",
+    val category_id: Int = 0,
+    val icon: String? = null,
+)

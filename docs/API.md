@@ -39,7 +39,8 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 | GET | `/api/app/config` | – | `{ok, version, lan_ip, public_base, has_public, server_name}` |
 | GET | `/api/app/search` | `q`, `type=movie\|series\|live` | array of groups with `variants[].media_key` |
 | GET | `/api/app/episodes` | `series_id` | `{episodes:{season:[…]}, items:{season:[{episode,title,media_key,ext,duration}]}, series_id}` |
-| GET | `/api/app/live` | `q` (optional) | array of `{kind:"live", channel_id, title}` |
+| GET | `/api/app/live` | `q` (optional), `category_id` (optional) | array of `{kind:"live", channel_id, title, category_id, icon}` |
+| GET | `/api/app/live/categories` | – | `[{id, name, count}]` |
 
 ## TVs and cast methods
 
@@ -58,6 +59,7 @@ All `POST` parameters are **query parameters** (`?key=value`), not a form or JSO
 | POST | `/api/app/stream` | `media_key`, `start_position` (s), `mode=cache\|virtual`, `quality=copy\|downgrade`, `prepare=1`, `format=mp4`, `declare_current=0\|1` | `{ok, token, title, mime, duration, mode, format, prepared, lan_url, public_url, path, expires_in}` |
 | GET | `/api/app/session` | `token` | `{ok, mode, mime, position, duration, max_served, clients}` |
 | POST | `/api/app/control` | `token`, `action=stop\|seek`, `value` (s) | `{ok, detail?}` |
+| POST | `/api/app/live/stream` | `channel_id` | `{ok, token, title, mime:"video/mpeg", mode:"live", duration:0, lan_url, public_url, expires_in}` |
 
 - `mode=cache&quality=downgrade` → **recommended for phone/remote players**: MPEG-TS,
   transcoded as fast as the CPU allows (several × realtime), so players can fill their
@@ -79,6 +81,14 @@ All `POST` parameters are **query parameters** (`?key=value`), not a form or JSO
   progressive players streaming a growing file.
 - `declare_current=0` declares the probed true total; use it when the client needs a
   stable duration/size before playback.
+
+### Live TV
+
+`POST /api/app/live/stream` starts a **live-file** session: ffmpeg appends the channel
+to a growing TS file and the TV/player is served that file (`Accept-Ranges: none`).
+Live sessions are non-seekable, `duration` is 0, and `max_served` stays 0 — use
+`clients` and the server log to confirm delivery. The provider's live slot is released
+when the session is stopped or the idle reaper fires.
 
 ## Receiver fallback page
 
