@@ -7,24 +7,18 @@ DLNA TV, a Chromecast, or plays it locally.
 **Status:** P0 scaffold — compiles, wires every P0 flow, DLNA casting and the
 remote screen are implemented; Chromecast uses Google's default receiver.
 
-## Build
-
-### GitHub Actions (recommended)
-
-Pushing anything under `android/` triggers `.github/workflows/android.yml`.
-The workflow builds a debug APK and uploads it as the **`vodcast-debug-apk`**
-artifact (Actions → run → Artifacts). Install it with `adb install` or by
-opening the `.apk` on the phone.
-
-### Local
+## Build (local only)
 
 Requirements: JDK 17, Android SDK 35 / build-tools 35.0.0.
 
 ```bash
 cd android
-./gradlew :app:assembleDebug
+./gradlew clean :app:assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The project is built on this machine; no CI service is used. A ready debug
+build is copied to `android/dist/vodcast-debug.apk` after each build.
 
 If `./gradlew` is not executable: `chmod +x gradlew`.
 Point Gradle at the SDK with `ANDROID_HOME` or `android/local.properties`:

@@ -96,9 +96,9 @@ Dependencies: Compose (BOM), OkHttp/Retrofit, kotlinx.serialization, UPnPCast (M
 
 ## 6. Build and distribution
 
-No Android SDK on the server. Recommended: **GitHub Actions** builds a debug APK on
-every push (`android.yml`) and uploads it as an artifact; the APK is installed from the
-artifact page. A release keystore can be added later for a signed install.
+Built **locally** on this machine (JDK 17 + Android SDK 35 + Gradle 8.9). No CI service
+is used. `android/dist/vodcast-debug.apk` holds the latest debug build; a release
+keystore can be added later for a signed install.
 
 ## 7. Phases
 
