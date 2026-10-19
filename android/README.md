@@ -4,10 +4,11 @@ Native Kotlin/Compose client for the VOD-delivery service. It searches the
 catalog through the app API, prepares a signed stream link, and casts it to a
 DLNA TV, a Chromecast, or plays it locally.
 
-**Status:** P0 — verified on a Samsung SM-F946B (Android 13): launch, connect,
-search, TV list, stream preparation (~3 s), and on-device playback with video +
-audio. DLNA casting and the remote screen are implemented; Chromecast uses
-Google's default receiver.
+**Status:** P1 — verified on a Samsung SM-F946B (Android 13): launch, connect,
+Discover (AI picks + by-name + by-meaning), Live TV, library playback, TV list,
+stream preparation (~3 s), and on-device playback with video + audio. DLNA and
+Cast TVs (server-side SCS) work; the UI uses a dark cinematic theme with bottom
+navigation.
 
 ## Build (local only)
 
@@ -53,6 +54,7 @@ sdk.dir=/path/to/Android/Sdk
 |---|---|
 | connect | `GET /api/app/config` |
 | search | `GET /api/app/search?q=&type=movie\|series` |
+| discover (3 groups) | `GET /api/app/discover?q=&kind=` → `ai_picks`, `by_name`, `by_meaning` |
 | live categories | `GET /api/app/live/categories` → `[{id,name,count}]` |
 | live channels | `GET /api/app/live?q=&category_id=` → `[{channel_id,title,icon}]` |
 | live stream | `POST /api/app/live/stream?channel_id=` → `{token,lan_url,public_url,mime,mode:"live"}` |
@@ -61,6 +63,9 @@ sdk.dir=/path/to/Android/Sdk
 | TV capabilities | `GET /api/app/tvs/detail?name=` |
 | probe methods | `POST /api/app/tvs/probe?name=` |
 | prepare link | `POST /api/app/stream?media_key=&mode=cache&quality=copy&prepare=1[&format=mp4]` |
+| library | `GET /api/app/library` · `POST /api/app/library/stream?media_key=` |
+| watchlist | `GET /api/app/watchlist` · `POST /api/app/watchlist/{add,remove}?media_key=` |
+| server cast | `POST /api/app/play?media_key=&tv=` · `POST /api/app/playback?action=` |
 | session truth | `GET /api/app/session?token=` (`max_served` = bytes the TV really fetched) |
 | seek / stop | `POST /api/app/control?token=&action=seek\|stop&value=` |
 

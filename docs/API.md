@@ -38,6 +38,7 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 | GET | `/api/app/whoami` | – | `{ok:true}` (token check) |
 | GET | `/api/app/config` | – | `{ok, version, lan_ip, public_base, has_public, server_name}` |
 | GET | `/api/app/search` | `q`, `type=movie\|series\|live` | array of groups with `variants[].media_key` |
+| GET | `/api/app/discover` | `q`, `kind=movie\|series\|live` (optional) | `{ok, query, ai_note, ai_picks:[group+reason], by_name:[group], by_meaning:[group]}` |
 | GET | `/api/app/episodes` | `series_id` | `{episodes:{season:[…]}, items:{season:[{episode,title,media_key,ext,duration}]}, series_id}` |
 | GET | `/api/app/live` | `q` (optional), `category_id` (optional) | array of `{kind:"live", channel_id, title, category_id, icon}` |
 | GET | `/api/app/live/categories` | – | `[{id, name, count}]` |
@@ -59,6 +60,8 @@ All `POST` parameters are **query parameters** (`?key=value`), not a form or JSO
 | POST | `/api/app/stream` | `media_key`, `start_position` (s), `mode=cache\|virtual`, `quality=copy\|downgrade`, `prepare=1`, `format=mp4`, `declare_current=0\|1` | `{ok, token, title, mime, duration, mode, format, prepared, lan_url, public_url, path, expires_in}` |
 | GET | `/api/app/session` | `token` | `{ok, mode, mime, position, duration, max_served, clients}` |
 | POST | `/api/app/control` | `token`, `action=stop\|seek`, `value` (s) | `{ok, detail?}` |
+| POST | `/api/app/playback` | `action=pause\|resume\|seek\|stop`, `value` | `{ok, ...}` — controls the server-side cast |
+| POST | `/api/app/library/stream` | `media_key` | signed stream for a downloaded file (`mode:"library"`) |
 | POST | `/api/app/live/stream` | `channel_id` | `{ok, token, title, mime:"video/mpeg", mode:"live", duration:0, lan_url, public_url, expires_in}` |
 
 - `mode=cache&quality=downgrade` → **recommended for phone/remote players**: MPEG-TS,
@@ -159,3 +162,17 @@ Provider URLs are never returned by these endpoints.
 - Each session is capped at `session_max_gb` (default 8 GB; virtual feeds 4 GB) and killed when exceeded.
 - Starting a stream requires at least 10 GB free on the server; otherwise it fails with a `disk full` error after purging stale cache.
 - The library is bounded by `cache_limit_gb` (default 50 GB); downloads are deferred while over budget.
+
+### Discover (3 result groups)
+
+`GET /api/app/discover` returns three curated groups for a natural-language query:
+
+- **`ai_picks`** — the LLM curator ranks up to 6 catalog titles from the semantic +
+  keyword candidate pool and returns a one-line reason for each. Cached for 10 min.
+- **`by_name`** — SQL keyword matches on titles (and series plot/genre), with simple
+  plural stemming (`zombies` also matches `zombie`).
+- **`by_meaning`** — vector (semantic) matches.
+
+Items already in `ai_picks` are removed from the other two groups so the three
+sections never repeat a title. If the LLM is unavailable, `ai_picks` falls back to
+the top-rated candidates and `ai_note` says so.

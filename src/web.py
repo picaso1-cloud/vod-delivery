@@ -671,6 +671,20 @@ async def app_tv_rename(name: str = "", new_name: str = ""):
         conn.close()
 
 
+@app.get("/api/app/discover", dependencies=[Depends(_app_auth)])
+async def app_discover(q: str = "", kind: str = ""):
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="q required")
+    return call_bridge("discover", q, kind, timeout=90.0)
+
+
+@app.post("/api/app/library/stream", dependencies=[Depends(_app_auth)])
+async def app_library_stream(media_key: str = ""):
+    if not media_key:
+        raise HTTPException(status_code=422, detail="media_key required")
+    return call_bridge("library_stream", media_key)
+
+
 @app.get("/api/app/library", dependencies=[Depends(_app_auth)])
 async def app_library():
     conn = store.connect()
@@ -679,6 +693,30 @@ async def app_library():
         for r in store.list_library(conn):
             d = dict(r)
             d.pop("url", None)
+            if not d.get("poster"):
+                row = None
+                if d["kind"] == "movie":
+                    row = conn.execute(
+                        "SELECT poster FROM movies WHERE stream_id=?", (d["ref_id"],)
+                    ).fetchone()
+                elif d["kind"] == "episode":
+                    parts = (d.get("media_key") or "").split(":")
+                    series_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+                    if series_id:
+                        row = conn.execute(
+                            "SELECT poster FROM series WHERE series_id=?", (series_id,)
+                        ).fetchone()
+                    if row is None:
+                        row = conn.execute(
+                            "SELECT s.poster FROM episodes e JOIN series s ON s.series_id=e.series_id "
+                            "WHERE e.episode_id=?",
+                            (d["ref_id"],),
+                        ).fetchone()
+                elif d["kind"] == "series":
+                    row = conn.execute(
+                        "SELECT poster FROM series WHERE series_id=?", (d["ref_id"],)
+                    ).fetchone()
+                d["poster"] = row["poster"] if row else None
             items.append(d)
         usage = store.library_size_bytes(conn)
     finally:

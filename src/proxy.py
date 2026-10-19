@@ -507,6 +507,19 @@ async def _virtual_channel_task(session: ProxySession, transcode: bool, my_gener
         session.respawn_count += 1
 
 
+async def start_library_session(path: Path, title: str, mime: str) -> ProxySession:
+    token = uuid.uuid4().hex[:12]
+    size = path.stat().st_size
+    session = ProxySession(
+        token=token, provider_url="", title=title, mode="library", mime=mime,
+        path=path, total=size,
+    )
+    session.ready.set()
+    _sessions[token] = session
+    logger.info("library session %s ready: %s (%d bytes)", token, title[:40], size)
+    return session
+
+
 async def start_virtual_session(provider_url: str, title: str, transcode: bool, start_offset: float = 0.0, loop: bool = False, idle_timeout: float = 180.0, declare_current: bool = False) -> ProxySession:
     async with _lock:
         for old_session in list(_sessions.values()):

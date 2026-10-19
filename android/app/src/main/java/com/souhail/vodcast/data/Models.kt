@@ -20,6 +20,8 @@ data class MediaGroup(
     val plot: String? = null,
     val variants: List<MediaVariant> = emptyList(),
     val channel_id: Int? = null,
+    val rating: Double = 0.0,
+    val reason: String? = null,
 )
 
 @Serializable
@@ -160,4 +162,49 @@ data class StatusInfo(
     val title: String? = null,
     val position: StatusPosition? = null,
     val diag: StatusDiag? = null,
+)
+
+@Serializable
+data class DiscoverResponse(
+    val ok: Boolean = false,
+    val query: String = "",
+    val ai_note: String = "",
+    val ai_picks: List<MediaGroup> = emptyList(),
+    val by_name: List<MediaGroup> = emptyList(),
+    val by_meaning: List<MediaGroup> = emptyList(),
+)
+
+@Serializable
+data class LibraryItem(
+    val media_key: String = "",
+    val kind: String = "",
+    val title: String = "",
+    val series_title: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val size_bytes: Long = 0,
+    val status: String = "",
+    val poster: String? = null,
+)
+
+@Serializable
+data class LibraryResponse(
+    val ok: Boolean = false,
+    val items: List<LibraryItem> = emptyList(),
+    val usage_bytes: Long = 0,
+)
+
+@Serializable
+data class WatchlistItem(
+    val kind: String = "",
+    val ref_id: Int = 0,
+    val title: String = "",
+    val year: Int? = null,
+    val poster: String? = null,
+)
+
+@Serializable
+data class WatchlistResponse(
+    val ok: Boolean = false,
+    val items: List<WatchlistItem> = emptyList(),
 )

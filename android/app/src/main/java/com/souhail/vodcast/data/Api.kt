@@ -140,6 +140,30 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun status(): StatusInfo = json.decodeFromString(exec("api/app/status"))
 
+    suspend fun discover(q: String, kind: String = ""): DiscoverResponse =
+        json.decodeFromString(exec("api/app/discover", mapOf("q" to q, "kind" to kind)))
+
+    suspend fun library(): LibraryResponse =
+        json.decodeFromString(exec("api/app/library"))
+
+    suspend fun libraryStream(mediaKey: String): StreamInfo =
+        json.decodeFromString(
+            exec("api/app/library/stream", mapOf("media_key" to mediaKey), post = true)
+        )
+
+    suspend fun watchlist(): WatchlistResponse =
+        json.decodeFromString(exec("api/app/watchlist"))
+
+    suspend fun watchlistAdd(mediaKey: String): ControlResult =
+        json.decodeFromString(
+            exec("api/app/watchlist/add", mapOf("media_key" to mediaKey), post = true)
+        )
+
+    suspend fun watchlistRemove(mediaKey: String): ControlResult =
+        json.decodeFromString(
+            exec("api/app/watchlist/remove", mapOf("media_key" to mediaKey), post = true)
+        )
+
     suspend fun control(token: String, action: String, value: Double = 0.0): ControlResult =
         json.decodeFromString(
             exec(

@@ -24,16 +24,18 @@ from aiogram.types import (
 from . import auditor, fastpath, library, provider, proxy, store, telemetry
 from .appsettings import is_allowed
 from .config import BOT_TOKEN
-from .llm import parse_request
+from .llm import parse_request, suggest as llm_suggest
 from .provider import Provider
 from .provider import health as provider_health
 
 
-from .search import Group, search as search_media
+from .parsing import normalize_for_grouping
+from .search import Group, keyword_search, search as search_media
 from .ssdp import Renderer, discover_renderers
 from .caster import cast, get_position, playback_state, probe_duration, seek, stop
 
 logger = logging.getLogger("vod-delivery")
+_DISCOVER_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 async def _resolve_media_key(media_key: str) -> dict | None:
@@ -2692,6 +2694,105 @@ async def main() -> None:
 
     asyncio.create_task(_provider_health_watch())
 
+    def _group_json(g: Group) -> dict:
+        rating = max((v.rating or 0) for v in g.variants) if g.variants else 0
+        return {
+            "kind": g.kind, "title": g.title, "year": g.year,
+            "score": round(g.best_score, 2), "rating": round(float(rating), 1),
+            "poster": g.poster, "plot": g.plot,
+            "variants": [
+                {"media_key": ("movie:" if g.kind == "movie" else "series:") + str(v.ref_id),
+                 "lang": v.lang, "ext": v.ext}
+                for v in g.variants[:8]
+            ],
+        }
+
+    async def api_discover(q: str, kind: str = "") -> dict:
+        query = (q or "").strip()
+        if not query:
+            return {"ok": False, "error": "query required", "ai_picks": [], "by_name": [], "by_meaning": []}
+        cache_key = f"{query.lower()}|{kind}"
+        now = time.time()
+        cached = _DISCOVER_CACHE.get(cache_key)
+        if cached and now - cached[0] < 600:
+            return cached[1]
+
+        groups = await asyncio.to_thread(search_media, {"title": query, "media_type": kind or None}, 12)
+        by_meaning = [_group_json(g) for g in groups]
+        keyword_groups = await asyncio.to_thread(keyword_search, query, kind or None, 12)
+        by_name = [_group_json(g) for g in keyword_groups]
+
+        merged: list[Group] = []
+        seen: set = set()
+        for g in list(groups) + list(keyword_groups):
+            key = (g.kind, normalize_for_grouping(g.title), g.year)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(g)
+        merged = merged[:16]
+
+        candidates = [
+            {
+                "title": g.title, "year": g.year, "kind": g.kind,
+                "rating": max((v.rating or 0) for v in g.variants) if g.variants else 0,
+                "plot": g.plot[:140],
+            }
+            for g in merged
+        ]
+        llm_result = await llm_suggest(query, candidates) if merged else None
+        note = ""
+        picks_raw: list[dict] = []
+        if llm_result:
+            note = str(llm_result.get("note") or "").strip()
+            for pick in (llm_result.get("picks") or [])[:6]:
+                if not isinstance(pick, dict):
+                    continue
+                title = str(pick.get("title") or "").strip()
+                if not title:
+                    continue
+                low = re.sub(r"\s*\(\d{4}\)\s*$", "", title).lower()
+                match = next((g for g in merged if g.title.lower() == low), None)
+                if match is None:
+                    match = next(
+                        (g for g in merged if low in g.title.lower() or g.title.lower() in low), None
+                    )
+                if match is None:
+                    continue
+                item = _group_json(match)
+                item["reason"] = str(pick.get("reason") or "").strip()[:160]
+                picks_raw.append(item)
+
+        if not picks_raw:
+            ranked = sorted(
+                merged,
+                key=lambda g: (
+                    max((v.rating or 0) for v in g.variants) if g.variants else 0,
+                    g.best_score,
+                ),
+                reverse=True,
+            )[:6]
+            picks_raw = [{**_group_json(g), "reason": "Top-rated match"} for g in ranked]
+            note = note or "AI picks unavailable — showing top-rated matches."
+
+        pick_keys = {
+            (item["kind"], normalize_for_grouping(item["title"]), item["year"]) for item in picks_raw
+        }
+        by_name = [
+            x for x in by_name
+            if (x["kind"], normalize_for_grouping(x["title"]), x["year"]) not in pick_keys
+        ]
+        by_meaning = [
+            x for x in by_meaning
+            if (x["kind"], normalize_for_grouping(x["title"]), x["year"]) not in pick_keys
+        ]
+        result = {
+            "ok": True, "query": query, "ai_note": note, "ai_picks": picks_raw,
+            "by_name": by_name, "by_meaning": by_meaning,
+        }
+        _DISCOVER_CACHE[cache_key] = (now, result)
+        return result
+
     async def api_search(q: str, kind: str) -> list:
         if kind == "live":
             streams = await provider.live_streams()
@@ -3059,6 +3160,33 @@ async def main() -> None:
         served = session_obj.max_served
         return {"ok": state == "PLAYING" or served > 0, "state": state, "token": session_obj.token, "file": path.name, "tv_bytes": served}
 
+    async def api_library_stream(media_key: str) -> dict:
+        from . import urlsign
+
+        conn = store.connect()
+        item = store.get_library_item(conn, media_key)
+        conn.close()
+        if item is None or not item["path"]:
+            return {"ok": False, "error": "not in library"}
+        path = Path(item["path"])
+        if not path.exists():
+            return {"ok": False, "error": "library file missing"}
+        ext = (path.suffix.lstrip(".") or "mkv").lower()
+        mime = {
+            "mkv": "video/x-matroska", "mp4": "video/mp4", "ts": "video/mpeg",
+            "avi": "video/x-msvideo",
+        }.get(ext, "application/octet-stream")
+        try:
+            session_obj = await proxy.start_library_session(path, item["title"] or "", mime)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:160]}
+        lan_ip = proxy.lan_ip_for("192.168.1.1")
+        urls = urlsign.urls_for(session_obj.token, lan_ip, ext=ext)
+        return {
+            "ok": True, "token": session_obj.token, "title": item["title"], "mime": mime,
+            "mode": "library", "duration": 0.0, **urls,
+        }
+
     async def api_app_stream(media_key: str, start_position: float = 0.0, mode: str = "cache",
                              quality: str = "copy", prepare: int = 0, format: str = "",
                              declare_current: int = 1) -> dict:
@@ -3264,7 +3392,8 @@ async def main() -> None:
              test_virtual=api_test_virtual,
              app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control,
              app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
-             live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream)
+             live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream,
+             discover=api_discover, library_stream=api_library_stream)
 
     @dp.message(Command("audit"))
     async def cmd_audit(message: Message) -> None:

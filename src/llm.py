@@ -176,3 +176,43 @@ async def parse_request(text: str) -> dict:
     if parsed.get("media_type") in ("movie", "series"):
         result["media_type"] = parsed["media_type"]
     return result
+
+
+SUGGEST_PROMPT = """You are a film curator for a private media catalog. The user describes what they want to watch in natural language. You receive a candidate list from the catalog (title, year, kind, rating, short plot). Pick the 5-8 titles that best match the intent, mood, genre and themes. If the query contains several themes, prefer titles matching ALL of them (for example zombies AND survival) over titles matching only one. Prefer higher ratings and well-known titles. Only pick from the candidates.
+
+Output ONE JSON object as the last thing in your reply:
+{"note": "one short sentence explaining the selection", "picks": [{"title": "exact candidate title", "year": 2020, "reason": "one short reason"}]}
+
+If nothing fits, return {"note": "...", "picks": []}. Output the JSON object only, no prose before or after."""
+
+
+async def suggest(query: str, candidates: list[dict]) -> dict | None:
+    lines = []
+    for c in candidates:
+        plot = (c.get("plot") or "").replace("\n", " ")[:140]
+        lines.append(
+            f"- {c.get('title')} ({c.get('year') or '?'}) [{c.get('kind')}] "
+            f"rating={float(c.get('rating') or 0):.1f} :: {plot}"
+        )
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": SUGGEST_PROMPT},
+            {"role": "user", "content": f"QUERY: {query}\n\nCANDIDATES:\n" + "\n".join(lines)},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 4000,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{LLM_BASE_URL}/chat/completions", json=payload)
+            response.raise_for_status()
+            message = response.json()["choices"][0]["message"]
+            content = message.get("content") or message.get("reasoning_content") or ""
+        for obj in reversed(_balanced_objects(content)):
+            if isinstance(obj, dict) and "picks" in obj:
+                return obj
+        logger.warning("llm suggest: no picks JSON; tail=%r", content[-200:])
+    except Exception:
+        logger.warning("llm suggest failed", exc_info=True)
+    return None
