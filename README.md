@@ -66,6 +66,7 @@ verification, and troubleshooting.
 
 ## Documentation
 
+- [docs/PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) — what the system does, verified behavior, constraints, known gaps
 - [docs/SETUP.md](docs/SETUP.md) — installation and full regeneration
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — modules, delivery modes, casting ladder, constraints
 - [docs/API.md](docs/API.md) — authenticated app API (search, streams, casting, TVs, library)

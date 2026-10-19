@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import ipaddress
 import shutil
 import time
 import uuid
@@ -1131,7 +1132,28 @@ async def _serve_cache(request, session: ProxySession):
     return resp
 
 
+_LAN_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("::1/128"),
+]
+
+
+def _client_allowed(request) -> bool:
+    peer = request.remote or ""
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(ip in net for net in _LAN_NETS)
+
+
 async def stream_handler(request):
+    if not _client_allowed(request):
+        return web.json_response({"error": "forbidden"}, status=403)
     token = request.match_info["token"]
     logger.info("handler enter: %s %s (t=%.3f)", request.method, token, asyncio.get_running_loop().time())
     session = _sessions.get(token)
@@ -1144,6 +1166,8 @@ async def stream_handler(request):
 async def signed_stream_handler(request):
     from . import urlsign
 
+    if not _client_allowed(request):
+        return web.json_response({"error": "forbidden"}, status=403)
     token = request.match_info["token"]
     exp = request.query.get("exp", "")
     sig = request.query.get("sig", "")
@@ -1278,6 +1302,8 @@ SEG_NAME_RE = re.compile(r"^(seg\d{5}\.ts|index\.m3u8)$")
 
 
 async def hls_segment_handler(request):
+    if not _client_allowed(request):
+        return web.json_response({"error": "forbidden"}, status=403)
     token = request.match_info["token"]
     name = request.match_info["name"]
     session = _sessions.get(token)
@@ -1308,6 +1334,8 @@ async def subs_vtt(request):
     return _web.Response(body=srt_to_vtt(data), content_type="text/vtt", charset="utf-8")
 
 async def library_file(request):
+    if not _client_allowed(request):
+        return web.json_response({"error": "forbidden"}, status=403)
     rel = request.match_info["path"]
     target = (LIBRARY_DIR / rel).resolve()
     if not str(target).startswith(str(LIBRARY_DIR.resolve())) or not target.is_file():

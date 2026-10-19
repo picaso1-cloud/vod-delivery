@@ -1,0 +1,8 @@
+/home/souhail/VOD-delivery/data/bot.log {
+    size 50M
+    rotate 3
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

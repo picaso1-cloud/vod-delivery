@@ -1108,6 +1108,27 @@ async def _refresh_controls() -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    class _RedactProviderUrls(logging.Filter):
+        _creds = re.compile(r"((?:movie|series|live)/)[^/\s]+/[^/\s]+/")
+        _userinfo = re.compile(r"//[^/@\s]+:[^/@\s]+@")
+
+        def filter(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return True
+            redacted = self._creds.sub(r"\1***/***/", msg)
+            redacted = self._userinfo.sub("//***:***@", redacted)
+            if redacted != msg:
+                record.msg = redacted
+                record.args = ()
+            return True
+
+    redactor = _RedactProviderUrls()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(redactor)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     global _bot
     dp = Dispatcher()
