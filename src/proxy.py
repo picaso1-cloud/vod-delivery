@@ -65,6 +65,8 @@ class ProxySession:
     is_live: bool = False
     stdout_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     live_file: Path | None = None
+    deferred: bool = False
+    deferred_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 _sessions: dict[str, ProxySession] = {}
@@ -119,6 +121,8 @@ async def seek_session(token: str, new_pos: float) -> tuple[bool, str]:
         return ok, "virtual decoder swap"
     if session.is_live:
         return False, "live sessions cannot seek"
+    if session.mode == "cache_mp4":
+        return False, "mp4 sessions are not server-seekable"
     if session.duration_s <= 0:
         return False, "duration unknown — cannot seek this stream"
     new_pos = max(0.0, min(new_pos, session.duration_s - 30))
@@ -174,7 +178,7 @@ async def _kill_orphan_ffmpeg() -> None:
 async def start_session(
     provider_url: str, title: str, mode: str = "copy", mime: str = "video/mpeg",
     start_offset: float = 0.0, dest_rel: Path | None = None, live: bool = False,
-    declare_current: bool = False,
+    declare_current: bool = False, deferred: bool = False,
 ) -> ProxySession:
     await _kill_orphan_ffmpeg()
     async with _lock:
@@ -193,8 +197,9 @@ async def start_session(
             session.path.mkdir(parents=True, exist_ok=True)
         elif mode.startswith("cache"):
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            suffix = ".ts" if mime == "video/mpeg" else ".mkv"
+            suffix = ".mp4" if mode == "cache_mp4" else (".ts" if mime == "video/mpeg" else ".mkv")
             session.path = CACHE_DIR / f"{session.token}{suffix}"
+        session.deferred = bool(deferred)
         session.started_at = asyncio.get_running_loop().time()
         session.last_client_seen = session.started_at
         _sessions[session.token] = session
@@ -204,7 +209,7 @@ async def start_session(
     if mode.startswith("cache"):
         session.total = await _probe_total(provider_url)
         session.seek_marks.append((0, start_offset))
-        if mode == "cache_downgrade":
+        if mode in ("cache_downgrade", "cache_mp4"):
             session.duration_s = await _probe_duration(provider_url)
             if session.duration_s > 0:
                 session.total = int(session.duration_s * 550_000)
@@ -217,6 +222,10 @@ async def start_session(
                 logger.info("resume: will start at %.0fs (est byte %d of %s) for %s", start_offset, session.resume_byte, session.total, title[:40])
             else:
                 logger.warning("resume: ffprobe failed for %s — starting from 0", title[:40])
+    if deferred and mode.startswith("cache") and not live:
+        asyncio.create_task(_session_watchdog(session))
+        logger.info("session %s prepared (deferred until first fetch) — %s", session.token, title[:40])
+        return session
     await _spawn_ffmpeg(session)
     if session.is_live:
         asyncio.create_task(_live_file_task(session))
@@ -566,7 +575,8 @@ async def _probe_tail_time(session: ProxySession) -> float | None:
         return None
 
 
-async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation: int) -> None:
+async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation: int,
+                           container: str = "mpegts", extra: list | None = None) -> None:
     total = session.total or 0
     avg_bps = (total / session.duration_s) if session.duration_s else 0.0
     session.stderr_log = (session.path.parent / f"ffmpeg-{session.token}.log").open("wb") if session.path else None
@@ -610,7 +620,7 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
             "-progress", f"pipe:{pw}",
             "-ss", f"{target_s:.3f}", "-user_agent", PROVIDER_USER_AGENT,
             "-i", session.provider_url,
-            *codec_args, "-f", "mpegts", "pipe:1",
+            *codec_args, *(extra or []), "-f", container, "pipe:1",
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -797,6 +807,13 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
     if session.mode == "cache_downgrade":
         session.feed_generation += 1
         asyncio.create_task(_cache_feed_task(session, transcode=True, my_generation=session.feed_generation))
+        return
+    if session.mode == "cache_mp4":
+        session.feed_generation += 1
+        asyncio.create_task(_cache_feed_task(
+            session, transcode=False, my_generation=session.feed_generation,
+            container="mp4", extra=["-movflags", "+frag_keyframe+empty_moov+default_base_moof"],
+        ))
         return
     transcode = session.mode in ("downgrade", "cache_downgrade")
     if transcode:
@@ -1001,6 +1018,13 @@ def _file_size(session: ProxySession) -> int:
 
 
 async def _serve_cache(request, session: ProxySession):
+    if session.deferred:
+        async with session.deferred_lock:
+            if session.deferred:
+                session.deferred = False
+                await _spawn_ffmpeg(session)
+                asyncio.create_task(_prime(session))
+                logger.info("deferred session %s started on first fetch", session.token)
     if session.mode != "virtual":
         try:
             await asyncio.wait_for(session.ready.wait(), timeout=50)

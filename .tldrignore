@@ -1,0 +1,10 @@
+data/
+.git/
+.venv/
+__pycache__/
+*.db
+*.bin
+data/cache/
+data/audit/
+.zvec-grep/
+.tldr/

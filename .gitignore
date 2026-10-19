@@ -28,3 +28,15 @@ downloads/
 
 # Test caches
 .pytest_cache/
+
+# Android builds and study artifacts
+*.apk
+*.apks
+*.aab
+webcaster*.zip
+Webcaster*.zip
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+.idea/

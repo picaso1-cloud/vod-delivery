@@ -203,6 +203,8 @@ def connect() -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE tvs ADD COLUMN {col} TEXT DEFAULT {default}" if col == "kind" else f"ALTER TABLE tvs ADD COLUMN {col} INTEGER DEFAULT {default}")
     if "sink_protocols" not in tv_cols:
         conn.execute("ALTER TABLE tvs ADD COLUMN sink_protocols TEXT")
+    if "cast_methods" not in tv_cols:
+        conn.execute("ALTER TABLE tvs ADD COLUMN cast_methods TEXT")
     conn.commit()
     return conn
 
@@ -293,6 +295,29 @@ def set_tv_sink_protocols(conn: sqlite3.Connection, udn: str, payload: dict | No
     value = json.dumps(payload) if payload else None
     conn.execute("UPDATE tvs SET sink_protocols=? WHERE udn=?", (value, udn))
     conn.commit()
+
+
+def set_tv_cast_methods(conn: sqlite3.Connection, udn: str, payload: dict | None) -> None:
+    value = json.dumps(payload) if payload else None
+    conn.execute("UPDATE tvs SET cast_methods=? WHERE udn=?", (value, udn))
+    conn.commit()
+
+
+def get_tv_cast_methods(conn: sqlite3.Connection, udn: str) -> dict | None:
+    row = conn.execute("SELECT cast_methods FROM tvs WHERE udn=?", (udn,)).fetchone()
+    if not row or not row["cast_methods"]:
+        return None
+    try:
+        return json.loads(row["cast_methods"])
+    except (TypeError, ValueError):
+        return None
+
+
+def find_tv_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM tvs WHERE ignored=0 AND name LIKE ? ORDER BY LENGTH(name) LIMIT 1",
+        (f"%{name}%",),
+    ).fetchone()
 
 
 def get_tv_sink_protocols(conn: sqlite3.Connection, udn: str) -> dict | None:

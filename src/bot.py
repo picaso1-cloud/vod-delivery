@@ -2695,7 +2695,20 @@ async def main() -> None:
 
     async def api_episodes(series_id: int) -> dict:
         info = await provider.series_info(series_id)
-        return {"episodes": info.get("episodes", {})}
+        raw = info.get("episodes", {}) or {}
+        items = {}
+        for season_key, eplist in raw.items():
+            items[str(season_key)] = [
+                {
+                    "episode": int(e.get("episode_num", 0)),
+                    "title": (e.get("title") or "").strip() or None,
+                    "media_key": f"episode:{e.get('id')}:{series_id}",
+                    "ext": e.get("container_extension"),
+                    "duration": (e.get("info") or {}).get("duration"),
+                }
+                for e in eplist if e.get("id") is not None
+            ]
+        return {"episodes": raw, "items": items, "series_id": series_id}
 
     async def api_tvs() -> list:
         conn = store.connect()
@@ -2980,13 +2993,25 @@ async def main() -> None:
         served = session_obj.max_served
         return {"ok": state == "PLAYING" or served > 0, "state": state, "token": session_obj.token, "file": path.name, "tv_bytes": served}
 
-    async def api_app_stream(media_key: str, start_position: float = 0.0, mode: str = "cache", quality: str = "copy") -> dict:
+    async def api_app_stream(media_key: str, start_position: float = 0.0, mode: str = "cache",
+                             quality: str = "copy", prepare: int = 0, format: str = "") -> dict:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
-        mime = "video/mpeg" if quality == "downgrade" else ("video/x-matroska" if payload["ext"] in ("mkv", "mp4") else "video/mpeg")
+        fmt = (format or "").lower()
+        if fmt == "mp4":
+            actual_mode, mime, served_ext = "cache_mp4", "video/mp4", "mp4"
+        elif mode == "virtual":
+            actual_mode, mime, served_ext = "virtual", "video/mpeg", "ts"
+        elif quality == "downgrade":
+            actual_mode, mime, served_ext = "cache_downgrade", "video/mpeg", "ts"
+        else:
+            actual_mode = "cache"
+            mime = "video/x-matroska" if payload["ext"] in ("mkv", "mp4") else "video/mpeg"
+            served_ext = "mkv" if mime == "video/x-matroska" else "ts"
+        deferred = bool(prepare) and actual_mode.startswith("cache")
         try:
-            if mode == "virtual":
+            if actual_mode == "virtual":
                 s = await proxy.start_virtual_session(
                     payload["url"], payload["title"],
                     transcode=(quality == "downgrade"),
@@ -2996,10 +3021,11 @@ async def main() -> None:
             else:
                 s = await proxy.start_session(
                     payload["url"], payload["title"],
-                    mode=f"cache_{quality}" if quality == "downgrade" else "cache",
+                    mode=actual_mode,
                     mime=mime,
                     start_offset=float(start_position or 0.0),
                     declare_current=True,
+                    deferred=deferred,
                 )
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
@@ -3013,11 +3039,11 @@ async def main() -> None:
             except Exception:
                 duration = 0.0
         lan_ip = proxy.lan_ip_for("192.168.1.1")
-        served_ext = "mkv" if (mode != "virtual" and quality == "copy") else "ts"
         urls = urlsign.urls_for(s.token, lan_ip, ext=served_ext)
         return {
             "ok": True, "token": s.token, "title": payload["title"],
-            "mime": s.mime, "duration": duration,
+            "mime": s.mime, "duration": duration, "mode": s.mode,
+            "format": served_ext, "prepared": deferred,
             "start_offset": float(start_position or 0.0), **urls,
         }
 
@@ -3049,11 +3075,87 @@ async def main() -> None:
             return {"ok": bool(ok), "detail": detail}
         return {"ok": False, "error": f"unsupported action {action}"}
 
+    async def api_app_config() -> dict:
+        import socket
+        from . import urlsign
+        from .version import __version__
+        base = urlsign.public_base()
+        return {
+            "ok": True, "version": __version__,
+            "lan_ip": proxy.lan_ip_for("192.168.1.1"),
+            "public_base": base, "has_public": bool(base),
+            "server_name": socket.gethostname(),
+        }
+
+    async def api_tv_detail(name: str) -> dict:
+        from .capabilities import derive_cast_methods
+        conn = store.connect()
+        row = store.find_tv_by_name(conn, name)
+        if row is None:
+            conn.close()
+            return {"ok": False, "error": "TV not found"}
+        protocols = store.get_tv_sink_protocols(conn, row["udn"])
+        stored = store.get_tv_cast_methods(conn, row["udn"])
+        conn.close()
+        methods = (stored or {}).get("methods") or derive_cast_methods(row["kind"], None, protocols)
+        tv = {k: row[k] for k in row.keys() if k != "sink_protocols"}
+        return {"ok": True, "tv": tv, "protocols": protocols, "methods": methods,
+                "last_probe": (stored or {}).get("at")}
+
+    async def api_tv_probe(name: str) -> dict:
+        from datetime import datetime, timezone
+        from .capabilities import derive_cast_methods, read_capabilities
+        from .scanner import scan_ip
+        conn = store.connect()
+        row = store.find_tv_by_name(conn, name)
+        conn.close()
+        if row is None:
+            return {"ok": False, "error": "TV not found"}
+        ip = row["ip"]
+        if not ip:
+            return {"ok": False, "error": "TV has no IP on record"}
+        scan = await scan_ip(ip)
+
+        async def _open(port: int) -> bool:
+            try:
+                _r, w = await asyncio.wait_for(asyncio.open_connection(ip, port), 1.5)
+                w.close()
+                try:
+                    await w.wait_closed()
+                except Exception:
+                    pass
+                return True
+            except Exception:
+                return False
+
+        ports = {}
+        for port in (8009, 8060, 8008, 7000, 3000, 3001):
+            ports[str(port)] = await _open(port)
+        location = scan.get("location") or row["location"]
+        protocols = None
+        if location:
+            try:
+                protocols = await read_capabilities(location)
+            except Exception:
+                protocols = None
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        methods = derive_cast_methods(scan.get("kind") or row["kind"], ports, protocols)
+        for m in methods:
+            m["verified_at"] = now
+        conn = store.connect()
+        if protocols:
+            store.set_tv_sink_protocols(conn, row["udn"], protocols)
+        store.set_tv_cast_methods(conn, row["udn"], {"methods": methods, "at": now, "ports": ports})
+        conn.close()
+        return {"ok": True, "tv": row["name"], "ip": ip, "scan": scan,
+                "ports": ports, "protocols": protocols, "methods": methods}
+
     from .web import bind as web_bind
     web_bind(loop=asyncio.get_running_loop(), search=api_search, episodes=api_episodes,
              tvs=api_tvs, play=api_play, live_play=api_live_play, control=api_control, status=api_status,
              test_virtual=api_test_virtual,
-             app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control)
+             app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control,
+             app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe)
 
     @dp.message(Command("audit"))
     async def cmd_audit(message: Message) -> None:

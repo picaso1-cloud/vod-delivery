@@ -36,15 +36,26 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 |---|---|---|---|
 | GET | `/api/app/health` | – | `{ok, version, tvs, library, queue}` |
 | GET | `/api/app/whoami` | – | `{ok:true}` (token check) |
+| GET | `/api/app/config` | – | `{ok, version, lan_ip, public_base, has_public, server_name}` |
 | GET | `/api/app/search` | `q`, `type=movie\|series\|live` | array of groups with `variants[].media_key` |
-| GET | `/api/app/episodes` | `series_id` | `{episodes:{season:[…]}}` |
+| GET | `/api/app/episodes` | `series_id` | `{episodes:{season:[…]}, items:{season:[{episode,title,media_key,ext,duration}]}, series_id}` |
 | GET | `/api/app/live` | `q` (optional) | array of `{kind:"live", channel_id, title}` |
+
+## TVs and cast methods
+
+| Method | Path | Params | Returns |
+|---|---|---|---|
+| GET | `/api/app/tvs` | – | `[{name, ip, kind, prefer_proxy, downgrade}]` |
+| GET | `/api/app/tvs/detail` | `name` | `{ok, tv, protocols, methods:[{method,available,detail,verified_at}], last_probe}` |
+| POST | `/api/app/tvs/probe` | `name` | same shape — runs SSDP/description and port probes for cast/dial/roku/airplay/webos |
+
+All `POST` parameters are **query parameters** (`?key=value`), not a form or JSON body.
 
 ## Streaming (signed URLs)
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| POST | `/api/app/stream` | `media_key`, `start_position` (s), `mode=cache\|virtual`, `quality=copy\|downgrade` | `{ok, token, title, mime, duration, lan_url, public_url, path, expires_in}` |
+| POST | `/api/app/stream` | `media_key`, `start_position` (s), `mode=cache\|virtual`, `quality=copy\|downgrade`, `prepare=1`, `format=mp4` | `{ok, token, title, mime, duration, mode, format, prepared, lan_url, public_url, path, expires_in}` |
 | GET | `/api/app/session` | `token` | `{ok, mode, mime, position, duration, max_served, clients}` |
 | POST | `/api/app/control` | `token`, `action=stop\|seek`, `value` (s) | `{ok, detail?}` |
 
@@ -58,6 +69,17 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 - `mode=cache&quality=copy` serves the original container (e.g. MKV). MKV puts its index
   at EOF, so progressive players may fail while the file is still growing — use for LAN
   TVs only.
+- `prepare=1` returns token + `lan_url`/`public_url` **without starting the feed**; the
+  downloader starts on the first client GET. Use it while the user is still choosing.
+- `format=mp4` (with `mode=cache`) produces fragmented MP4 — required by the stock
+  Chromecast receiver; MPEG-TS sessions are not server-seekable.
+
+## Receiver fallback page
+
+`GET /tv/{token}?exp=&sig=&ext=ts|mkv|mp4` returns a minimal HTML5 `<video>` page that
+plays the signed URL. Exposed on the public edge (`/tv/*`) for TVs that cannot decode
+the stream natively. It does not require the bearer token — the signed URL is the
+credential.
 - Signed URLs carry a container extension (`/s/{token}.ts`, `.mkv`) so players can
   identify the format without probing.
 - `lan_url` works on the home network; `public_url` is present when the `public_base` setting is configured.

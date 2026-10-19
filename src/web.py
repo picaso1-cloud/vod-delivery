@@ -473,6 +473,11 @@ async def app_whoami():
     return {"ok": True}
 
 
+@app.get("/api/app/config", dependencies=[Depends(_app_auth)])
+async def app_config():
+    return call_bridge("app_config")
+
+
 @app.get("/api/app/search", dependencies=[Depends(_app_auth)])
 async def app_search(q: str = "", type: str = "movie"):
     return call_bridge("search", q, type)
@@ -488,11 +493,27 @@ async def app_tvs():
     return call_bridge("tvs")
 
 
+@app.get("/api/app/tvs/detail", dependencies=[Depends(_app_auth)])
+async def app_tv_detail(name: str = ""):
+    if not name:
+        raise HTTPException(status_code=422, detail="name required")
+    return call_bridge("tv_detail", name)
+
+
+@app.post("/api/app/tvs/probe", dependencies=[Depends(_app_auth)])
+async def app_tv_probe(name: str = ""):
+    if not name:
+        raise HTTPException(status_code=422, detail="name required")
+    return call_bridge("tv_probe", name, timeout=180.0)
+
+
 @app.post("/api/app/stream", dependencies=[Depends(_app_auth)])
-async def app_stream(media_key: str = "", start_position: float = 0.0, mode: str = "cache", quality: str = "copy"):
+async def app_stream(media_key: str = "", start_position: float = 0.0, mode: str = "cache",
+                     quality: str = "copy", prepare: int = 0, format: str = ""):
     if not media_key:
         raise HTTPException(status_code=422, detail="media_key required")
-    return call_bridge("app_stream", media_key, float(start_position), mode, quality, timeout=300.0)
+    return call_bridge("app_stream", media_key, float(start_position), mode, quality,
+                       int(prepare), format, timeout=300.0)
 
 
 @app.get("/api/app/session", dependencies=[Depends(_app_auth)])
@@ -543,6 +564,25 @@ async def app_live_play(channel_id: int = 0, tv: str = ""):
     if not channel_id:
         raise HTTPException(status_code=422, detail="channel_id required")
     return call_bridge("live_play", channel_id, tv, timeout=300.0)
+
+
+@app.get("/tv/{token}", response_class=HTMLResponse)
+def tv_receiver(token: str, exp: str = "", sig: str = "", ext: str = "ts"):
+    import html as _html
+    import re as _re
+
+    from . import proxy, urlsign
+
+    if not _re.fullmatch(r"[a-f0-9]{12}", token) or ext not in ("ts", "mkv", "mp4"):
+        raise HTTPException(status_code=404, detail="not found")
+    base = urlsign.public_base() or f"http://{proxy.lan_ip_for('192.168.1.1')}:8091"
+    src = _html.escape(f"{base}/s/{token}.{ext}?exp={exp}&sig={sig}")
+    return HTMLResponse(
+        "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>VOD</title><style>html,body{margin:0;background:#000;height:100%}"
+        "video{width:100%;height:100vh;background:#000}</style></head><body>"
+        f"<video controls autoplay playsinline src='{src}'></video></body></html>"
+    )
 
 
 @app.post("/api/app/tvs/scan", dependencies=[Depends(_app_auth)])

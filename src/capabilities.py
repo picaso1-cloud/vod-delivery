@@ -160,3 +160,34 @@ async def read_capabilities(location: str) -> dict:
         except Exception as exc:
             result["transport_state"] = f"{type(exc).__name__} {exc}"
     return result
+
+
+CAST_METHOD_PORTS = {
+    "cast": 8009,
+    "dial": 8008,
+    "roku": 8060,
+    "airplay": 7000,
+    "webos": 3001,
+}
+
+
+def derive_cast_methods(kind: str | None, ports: dict | None = None,
+                        protocols: dict | None = None) -> list:
+    ports = ports or {}
+    entries = (protocols or {}).get("mimes") or (protocols or {}).get("entries") or []
+    methods = [{
+        "method": "dlna",
+        "available": kind == "dlna",
+        "detail": f"UPnP AVTransport, {len(entries)} protocols" if entries else ("UPnP AVTransport" if kind == "dlna" else "not detected"),
+    }]
+    for name, port in CAST_METHOD_PORTS.items():
+        if name == "cast":
+            open_ = bool(ports.get("8009")) or kind == "cast"
+        else:
+            open_ = bool(ports.get(str(port)))
+        methods.append({
+            "method": name,
+            "available": open_,
+            "detail": f"port {port} open" if open_ else f"port {port} closed",
+        })
+    return methods
