@@ -689,6 +689,11 @@ private fun PlayDialog(
                         format = if (target == "cast") "mp4" else null,
                     )
                 }
+                if (!info.ok) {
+                    prepared = null
+                    error = info.error ?: "stream failed"
+                    return@launch
+                }
                 prepared = info
                 usePublic = !usingLan
             } catch (e: Exception) {

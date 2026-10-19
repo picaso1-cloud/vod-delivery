@@ -230,13 +230,20 @@ async def start_session(
     await _spawn_ffmpeg(session)
     if session.is_live:
         asyncio.create_task(_live_file_task(session))
-        for _ in range(24):
+        ready = False
+        for _ in range(40):
             if session.done:
-                await _kill(session)
-                raise RuntimeError("live source unavailable")
+                break
             if session.live_file and session.live_file.exists() and session.live_file.stat().st_size >= 400 * 1024:
+                ready = True
                 break
             await asyncio.sleep(0.25)
+        if not ready:
+            await _kill(session)
+            raise RuntimeError(
+                "live source unavailable — channel offline, not in subscription, "
+                "or provider slot busy (retry in ~45s)"
+            )
     asyncio.create_task(_prime(session))
     if not mode.startswith("cache"):
         asyncio.create_task(_session_watchdog(session))
@@ -1251,7 +1258,7 @@ async def _dispatch_stream(request, session):
         if session.proc is None:
             await _spawn_ffmpeg(session)
 
-    if not session.ready.is_set():
+    if not session.is_live and not session.ready.is_set():
         try:
             await asyncio.wait_for(session.ready.wait(), timeout=30)
         except asyncio.TimeoutError:
@@ -1269,9 +1276,7 @@ async def _dispatch_stream(request, session):
             start = 0
     resp = web.StreamResponse(status=206 if start else 200, headers=headers)
     if session.is_live:
-        if start:
-            resp.headers["Content-Range"] = f"bytes {start}-{FAKE_LENGTH - 1}/{FAKE_LENGTH}"
-        resp.content_length = FAKE_LENGTH - start
+        pass
     elif session.est_length and session.est_length > start:
         if start:
             resp.headers["Content-Range"] = f"bytes {start}-{session.est_length - 1}/{session.est_length}"

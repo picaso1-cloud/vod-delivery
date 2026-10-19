@@ -85,9 +85,11 @@ All `POST` parameters are **query parameters** (`?key=value`), not a form or JSO
 ### Live TV
 
 `POST /api/app/live/stream` starts a **live-file** session: ffmpeg appends the channel
-to a growing TS file and the TV/player is served that file (`Accept-Ranges: none`).
-Live sessions are non-seekable, `duration` is 0, and `max_served` stays 0 — use
-`clients` and the server log to confirm delivery. The provider's live slot is released
+to a growing TS file and the TV/player is served that file as a **chunked** response
+(`Accept-Ranges: none`, no `Content-Length`) — a fixed fake length breaks ExoPlayer's
+second connection. Dead channels return `{ok:false, error:"live source unavailable …"}`
+after ~7 s instead of a URL that 404s. Live sessions are non-seekable, `duration` is 0,
+and `max_served` stays 0 — use `clients` and the server log to confirm delivery. The provider's live slot is released
 when the session is stopped or the idle reaper fires.
 
 ## Receiver fallback page

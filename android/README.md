@@ -135,3 +135,9 @@ android/app/src/main/java/com/souhail/vodcast/
 - Live TV verified server-side: 176 categories, 63 channels in the first
   category, `POST /api/app/live/stream` returns a signed `.ts` URL, the live
   feed served 256 KB with `Accept-Ranges: none` and stopped cleanly.
+- Live TV verified on the device: BEIN Sports → `c2.qti.avc.decoder`
+  initialized, `state READY`, `isPlaying=true`, frames flowing, no errors.
+- Dead channels now fail fast: `{ok:false, error:"live source unavailable …"}`
+  (verified with a 403 channel); the app shows that error instead of a dead URL.
+- Live responses are **chunked** (no fake `Content-Length`); a fake 2 GB length
+  made ExoPlayer's second connection wait 8 s for headers and time out.

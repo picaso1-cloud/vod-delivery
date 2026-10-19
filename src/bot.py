@@ -3093,7 +3093,8 @@ async def main() -> None:
     async def api_live_list(q: str = "", category_id: int = 0) -> list:
         streams = await provider.live_streams(category_id or None)
         ql = (q or "").lower().strip()
-        hits = [s for s in streams if ql in (s.get("name") or "").lower()] if ql else streams
+        usable = [s for s in streams if not (s.get("name") or "").strip().startswith("=")]
+        hits = [s for s in usable if ql in (s.get("name") or "").lower()] if ql else usable
         return [
             {"kind": "live", "channel_id": int(s["stream_id"]), "title": s.get("name") or "",
              "category_id": int(s.get("category_id") or 0), "icon": s.get("stream_icon")}
