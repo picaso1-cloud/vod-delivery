@@ -747,7 +747,7 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
     link_token = session.get("link_token")
     link_live = proxy.get_session(link_token) if link_token else None
     if link_live is not None and not link_live.done and attempts:
-        attempts = [("link", "copy")]
+        attempts = [("link", "copy")] + attempts
     for mode, quality in attempts:
         try:
             await stop(renderer)
@@ -2247,11 +2247,13 @@ async def main() -> None:
         s = proxy.get_session(token) if token else None
         if s is None or s.done:
             try:
-                s = await proxy.start_virtual_session(
-                    payload["url"], payload["title"], transcode=True,
+                s = await proxy.start_session(
+                    payload["url"], payload["title"],
+                    mode="cache_downgrade", mime="video/mpeg",
                     start_offset=float(session.get("resume_pos") or 0.0),
-                    idle_timeout=900.0,
+                    declare_current=True,
                 )
+                s.idle_timeout_s = 900.0
             except Exception as exc:
                 await query.message.answer(f"⚠️ Couldn't prepare the stream: {str(exc)[:120]}")
                 return
@@ -2265,7 +2267,7 @@ async def main() -> None:
                 pass
         from . import urlsign
 
-        urls = urlsign.urls_for(s.token, proxy.lan_ip_for("192.168.1.1"))
+        urls = urlsign.urls_for(s.token, proxy.lan_ip_for("192.168.1.1"), ext="ts")
         lines = [f"📱 <b>{payload['title']}</b>", ""]
         if urls.get("public_url"):
             lines += ["<b>Anywhere (public)</b>:", f"<code>{urls['public_url']}</code>", ""]
@@ -2953,13 +2955,14 @@ async def main() -> None:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
-        mime = "video/x-matroska" if payload["ext"] in ("mkv", "mp4") else "video/mpeg"
+        mime = "video/mpeg" if quality == "downgrade" else ("video/x-matroska" if payload["ext"] in ("mkv", "mp4") else "video/mpeg")
         try:
             if mode == "virtual":
                 s = await proxy.start_virtual_session(
                     payload["url"], payload["title"],
                     transcode=(quality == "downgrade"),
                     start_offset=float(start_position or 0.0),
+                    declare_current=True,
                 )
             else:
                 s = await proxy.start_session(
@@ -2967,6 +2970,7 @@ async def main() -> None:
                     mode=f"cache_{quality}" if quality == "downgrade" else "cache",
                     mime=mime,
                     start_offset=float(start_position or 0.0),
+                    declare_current=True,
                 )
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
@@ -2980,7 +2984,8 @@ async def main() -> None:
             except Exception:
                 duration = 0.0
         lan_ip = proxy.lan_ip_for("192.168.1.1")
-        urls = urlsign.urls_for(s.token, lan_ip)
+        served_ext = "mkv" if (mode != "virtual" and quality == "copy") else "ts"
+        urls = urlsign.urls_for(s.token, lan_ip, ext=served_ext)
         return {
             "ok": True, "token": s.token, "title": payload["title"],
             "mime": s.mime, "duration": duration,

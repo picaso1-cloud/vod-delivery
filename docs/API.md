@@ -48,8 +48,18 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 | GET | `/api/app/session` | `token` | `{ok, mode, mime, position, duration, max_served, clients}` |
 | POST | `/api/app/control` | `token`, `action=stop\|seek`, `value` (s) | `{ok, detail?}` |
 
-- `mode=cache` serves the raw container (e.g. MKV). Best for LAN TVs.
-- `mode=virtual` serves a progressive MPEG-TS feed (1× realtime). Best for players and remote viewing — MKV indexes live at EOF and cannot be read progressively.
+- `mode=cache&quality=downgrade` → **recommended for phone/remote players**: MPEG-TS,
+  transcoded as fast as the CPU allows (several × realtime), so players can fill their
+  buffers. Responses end at the current file size (live-edge semantics) and ranges past
+  EOF return `416`.
+- `mode=virtual` → MPEG-TS at **1× realtime**. Used for TVs / server-controlled playback
+  (screenshare pacing, server-side seek). Some players (e.g. MX Player) cannot fill their
+  buffer from a realtime feed and will appear to buffer forever.
+- `mode=cache&quality=copy` serves the original container (e.g. MKV). MKV puts its index
+  at EOF, so progressive players may fail while the file is still growing — use for LAN
+  TVs only.
+- Signed URLs carry a container extension (`/s/{token}.ts`, `.mkv`) so players can
+  identify the format without probing.
 - `lan_url` works on the home network; `public_url` is present when the `public_base` setting is configured.
 - `expires_in` is the signed-link TTL (6 h). The session ends after 15 min without a client fetch (3 min for non-link sessions).
 - `max_served` is the byte-truth counter: a casting client should confirm TV consumption by watching it grow.

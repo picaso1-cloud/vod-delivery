@@ -22,5 +22,6 @@ def verify(secret: str, token: str, exp: str, sig: str, now: int | None = None) 
     return hmac.compare_digest(make_sig(secret, token, exp_i), sig or "")
 
 
-def stream_path(secret: str, token: str, ttl: int = 21600) -> str:
-    return f"/s/{token}?{signed_query(secret, token, ttl)}"
+def stream_path(secret: str, token: str, ttl: int = 21600, ext: str = "") -> str:
+    suffix = f".{ext.lstrip('.')}" if ext else ""
+    return f"/s/{token}{suffix}?{signed_query(secret, token, ttl)}"

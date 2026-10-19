@@ -32,6 +32,7 @@ class ProxySession:
     clients: int = 0
     started_at: float = 0.0
     idle_timeout_s: float = 180.0
+    declare_current: bool = False
     output: bytes = field(default=b"")
     done: bool = False
     first_chunk: bytes | None = None
@@ -170,6 +171,7 @@ async def _kill_orphan_ffmpeg() -> None:
 async def start_session(
     provider_url: str, title: str, mode: str = "copy", mime: str = "video/mpeg",
     start_offset: float = 0.0, dest_rel: Path | None = None, live: bool = False,
+    declare_current: bool = False,
 ) -> ProxySession:
     await _kill_orphan_ffmpeg()
     async with _lock:
@@ -179,6 +181,7 @@ async def start_session(
         session = ProxySession(
             token=uuid.uuid4().hex[:12], provider_url=provider_url, title=title,
             mode=mode, mime=mime, start_offset=start_offset, dest_rel=dest_rel, is_live=live,
+            declare_current=declare_current,
         )
         if mode == "hls":
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -414,7 +417,12 @@ async def _virtual_channel_task(session: ProxySession, transcode: bool, my_gener
         session.respawn_count += 1
 
 
-async def start_virtual_session(provider_url: str, title: str, transcode: bool, start_offset: float = 0.0, loop: bool = False, idle_timeout: float = 180.0) -> ProxySession:
+async def start_virtual_session(provider_url: str, title: str, transcode: bool, start_offset: float = 0.0, loop: bool = False, idle_timeout: float = 180.0, declare_current: bool = False) -> ProxySession:
+    async with _lock:
+        for old_session in list(_sessions.values()):
+            if not old_session.done:
+                await _kill(old_session)
+        _sessions.clear()
     token = uuid.uuid4().hex[:12]
     path = CACHE_DIR / f"virtual-{token}.ts"
     session = ProxySession(
@@ -425,6 +433,7 @@ async def start_virtual_session(provider_url: str, title: str, transcode: bool, 
     session.virtual_transcode = transcode
     session.virtual_loop = loop
     session.idle_timeout_s = idle_timeout
+    session.declare_current = declare_current
     session.decoder_content_base = float(start_offset)
     session.duration_s = await _probe_duration(provider_url)
     if transcode:
@@ -929,9 +938,11 @@ async def _serve_cache(request, session: ProxySession):
         if session.total is not None:
             logger.info("late total-size probe recovered: %s bytes for %s", session.total, session.title)
     declared_total = (session.total - session.resume_byte) if session.total else total
+    if session.declare_current:
+        declared_total = max(1, _file_size(session))
     if start >= declared_total:
-        return web.Response(status=416)
-    if session.mode in ("virtual", "cache_downgrade") and start >= _file_size(session):
+        return web.Response(status=416, headers={"Content-Range": f"bytes */{declared_total}"})
+    if (not session.declare_current) and session.mode in ("virtual", "cache_downgrade") and start >= _file_size(session):
         sliver = b""
         try:
             with session.path.open("rb") as fh:
@@ -983,6 +994,8 @@ async def _serve_cache(request, session: ProxySession):
         status = 206
         end = (stop_offset - 1) if stop_offset is not None else declared_total - 1
         headers["Content-Range"] = f"bytes {start}-{end}/{declared_total}"
+    if session.declare_current and stop_offset is None:
+        stop_offset = declared_total
     length = (stop_offset - start) if stop_offset is not None else (declared_total - start)
     headers["Content-Length"] = str(length)
 
@@ -1229,7 +1242,8 @@ async def start_server(port: int = PROXY_PORT) -> None:
                 pass
     app = web.Application()
     app.router.add_get("/stream/{token}", stream_handler)
-    app.router.add_get("/s/{token}", signed_stream_handler)
+    app.router.add_get("/s/{token}.{ext}", signed_stream_handler)
+    app.router.add_get("/s/{token:[a-f0-9]+}", signed_stream_handler)
     app.router.add_get("/stream/{token}/{name}", hls_segment_handler)
     app.router.add_get("/library/{path:.*}", library_file)
     app.router.add_get(r"/subs/{key:[\\w:]+}\\.vtt", subs_vtt)
