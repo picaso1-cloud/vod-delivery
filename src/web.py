@@ -900,8 +900,10 @@ async def app_pair_request(body: PairRequestIn, request: Request):
         )
     finally:
         conn.close()
+    notified = False
     try:
-        await asyncio.to_thread(call_bridge, "pair_notify", req["id"], timeout=10)
+        result = await asyncio.to_thread(call_bridge, "pair_notify", req["id"], timeout=10)
+        notified = bool(result and result.get("ok"))
     except Exception:
         logger.warning("pair notification failed", exc_info=True)
     return {
@@ -909,6 +911,7 @@ async def app_pair_request(body: PairRequestIn, request: Request):
         "request_id": req["id"],
         "code": req["code"],
         "expires_in": store.PAIR_TTL_S,
+        "notified": notified,
     }
 
 
