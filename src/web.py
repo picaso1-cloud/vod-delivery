@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import secrets
 import threading
 import time
@@ -7,6 +8,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from . import store
 from . import library
@@ -14,6 +16,8 @@ from .library import owner_chat_id
 from .appsettings import parse_m3u_url, provider_config, save_provider_config
 from .version import __version__ as APP_VERSION
 from .scanner import scan_ip
+
+logger = logging.getLogger(__name__)
 
 WEB_PORT = 8095
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "web_templates"))
@@ -73,6 +77,19 @@ _WEB_STARTED = time.time()
 _RATE_LOCK = threading.Lock()
 _RATE: dict[str, list[float]] = {}
 _METRICS = {"requests": 0, "status": {}}
+_PAIR_RATE: dict[str, list[float]] = {}
+_PAIR_LOCK = threading.Lock()
+
+
+def _pair_rate_ok(ip: str) -> bool:
+    now = time.time()
+    with _PAIR_LOCK:
+        hits = [t for t in _PAIR_RATE.get(ip, []) if now - t < 60.0]
+        if len(hits) >= 6:
+            return False
+        hits.append(now)
+        _PAIR_RATE[ip] = hits
+    return True
 
 
 def _db():
@@ -314,6 +331,50 @@ def settings_access(allowed_ids: str = Form(""), web_password: str = Form(""), c
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
+def _tokens_page(request, conn, created_token, saved):
+    return TEMPLATES.TemplateResponse(
+        request,
+        "tokens.html",
+        {
+            "tokens": store.list_app_tokens(conn),
+            "pairs": store.list_pair_requests(conn, "pending"),
+            "created_token": created_token,
+            "saved": saved,
+            "panel_url": str(request.base_url).rstrip("/"),
+            "default_password": (store.get_setting(conn, "web_password") or "admin") == "admin",
+        },
+    )
+
+
+@app.get("/tokens", response_class=HTMLResponse)
+def tokens_page(request: Request, conn=Depends(_auth)):
+    return _tokens_page(request, conn, None, request.query_params.get("saved"))
+
+
+@app.post("/tokens/create", response_class=HTMLResponse)
+def tokens_create(request: Request, label: str = Form(""), conn=Depends(_auth)):
+    token = store.issue_app_token(conn, label.strip() or "manual")
+    return _tokens_page(request, conn, token, None)
+
+
+@app.post("/tokens/revoke")
+def tokens_revoke(token: str = Form(""), conn=Depends(_auth)):
+    store.revoke_app_token(conn, token)
+    return RedirectResponse("/tokens?saved=1", status_code=303)
+
+
+@app.post("/tokens/pair/approve")
+def tokens_pair_approve(request_id: str = Form(""), conn=Depends(_auth)):
+    store.approve_pair_request(conn, request_id)
+    return RedirectResponse("/tokens?saved=1", status_code=303)
+
+
+@app.post("/tokens/pair/deny")
+def tokens_pair_deny(request_id: str = Form(""), conn=Depends(_auth)):
+    store.deny_pair_request(conn, request_id)
+    return RedirectResponse("/tokens?saved=1", status_code=303)
+
+
 def start_in_thread() -> None:
     import uvicorn
 
@@ -448,6 +509,15 @@ def _app_auth(request: Request) -> None:
         finally:
             conn.close()
     raise HTTPException(status_code=401, detail="app token required")
+
+
+def _admin_auth(request: Request) -> None:
+    host = request.client.host if request.client else ""
+    if host in ("127.0.0.1", "::1"):
+        return
+    if request.cookies.get("vod_session", "") in _sessions:
+        return
+    raise HTTPException(status_code=401, detail="panel login required")
 
 
 def _local_only(request: Request) -> None:
@@ -793,21 +863,67 @@ async def app_client_log(level: str = "I", tag: str = "", message: str = ""):
     return call_bridge("client_log", level, tag, message)
 
 
-@app.get("/api/app/tokens", dependencies=[Depends(_app_auth)])
+@app.get("/api/app/tokens", dependencies=[Depends(_admin_auth)])
 async def app_tokens_list():
     return call_bridge("tokens_list")
 
 
-@app.post("/api/app/tokens", dependencies=[Depends(_app_auth)])
+@app.post("/api/app/tokens", dependencies=[Depends(_admin_auth)])
 async def app_tokens_create(label: str = ""):
     return call_bridge("tokens_create", label)
 
 
-@app.delete("/api/app/tokens", dependencies=[Depends(_app_auth)])
+@app.delete("/api/app/tokens", dependencies=[Depends(_admin_auth)])
 async def app_tokens_revoke(token: str = ""):
     if not token:
         raise HTTPException(status_code=422, detail="token required")
     return call_bridge("tokens_revoke", token)
+
+
+class PairRequestIn(BaseModel):
+    device_name: str = ""
+    platform: str = ""
+    instance_id: str = ""
+
+
+@app.post("/api/app/pair/request")
+async def app_pair_request(body: PairRequestIn, request: Request):
+    ip = request.client.host if request.client else ""
+    if not _pair_rate_ok(ip):
+        raise HTTPException(status_code=429, detail="too many pairing requests")
+    conn = store.connect()
+    try:
+        if store.count_pending_pairs(conn) >= 20:
+            raise HTTPException(status_code=429, detail="too many pending requests")
+        req = store.create_pair_request(
+            conn, body.device_name, body.platform, body.instance_id, ip
+        )
+    finally:
+        conn.close()
+    try:
+        await asyncio.to_thread(call_bridge, "pair_notify", req["id"], timeout=10)
+    except Exception:
+        logger.warning("pair notification failed", exc_info=True)
+    return {
+        "ok": True,
+        "request_id": req["id"],
+        "code": req["code"],
+        "expires_in": store.PAIR_TTL_S,
+    }
+
+
+@app.get("/api/app/pair/status")
+async def app_pair_status(request_id: str = "", code: str = ""):
+    if not request_id or not code:
+        raise HTTPException(status_code=422, detail="request_id and code required")
+    conn = store.connect()
+    try:
+        res = store.pair_status(conn, request_id, code)
+    finally:
+        conn.close()
+    if res is None:
+        raise HTTPException(status_code=404, detail="unknown request")
+    return {"ok": True, **res}
 
 
 @app.post("/api/app/library/stream", dependencies=[Depends(_app_auth)])

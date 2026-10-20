@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}App access · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>App access</h1>
+  <p class="muted">Tokens for the Android client and other devices. Pair a device or mint a token by hand.</p>
+</div>
+
+{% if saved %}<div class="flash flash--ok"><span class="flash-icon">✓</span><span>Saved.</span></div>{% endif %}
+{% if default_password %}<div class="flash flash--err"><span class="flash-icon">⚠️</span><span>Panel password is still the default. Change it in Settings before exposing the panel.</span></div>{% endif %}
+
+{% if created_token %}
+<div class="card" style="border-color:var(--ok);">
+  <h2>New token</h2>
+  <p class="muted">Copy it now — it will not be shown again.</p>
+  <div style="display:flex;gap:var(--s-3);align-items:center;flex-wrap:wrap;margin:var(--s-3) 0;">
+    <code id="newtok" style="font-size:15px;word-break:break-all;">{{ created_token }}</code>
+    <button type="button" class="ghost btn--sm" onclick="navigator.clipboard.writeText(document.getElementById('newtok').textContent);this.textContent='Copied'">Copy</button>
+  </div>
+  <p class="hint">Android app → Settings → server <code>{{ panel_url }}</code> → paste the token.</p>
+</div>
+{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h2>Generate a token</h2>
+    <form method="post" action="/tokens/create">
+      <label class="field"><span>Label</span><input type="text" name="label" placeholder="Pixel 8, living-room tablet…" autocomplete="off"></label>
+      <div class="form-actions"><button>Generate</button></div>
+    </form>
+    <p class="hint">Or send <code>/token label</code> to the Telegram bot.</p>
+  </div>
+  <div class="card">
+    <h2>Pair a device</h2>
+    <p class="muted">The app asks for access, you approve here or in Telegram, and the device collects its token automatically.</p>
+    <p class="hint">Server URL for the app: <code>{{ panel_url }}</code></p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pending requests</h2>
+  {% if pairs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Device</th><th>Platform</th><th>Code</th><th>IP</th><th>Requested</th><th></th></tr></thead>
+      <tbody>
+        {% for p in pairs %}
+        <tr>
+          <td><b>{{ p.device_name or "Unknown device" }}</b></td>
+          <td class="muted">{{ p.platform or "—" }}</td>
+          <td><code>{{ p.code }}</code></td>
+          <td class="muted">{{ p.ip or "—" }}</td>
+          <td class="muted">{{ p.created_at }}</td>
+          <td style="white-space:nowrap;">
+            <form method="post" action="/tokens/pair/approve" style="display:inline;">
+              <input type="hidden" name="request_id" value="{{ p.id }}">
+              <button class="btn--sm">Approve</button>
+            </form>
+            <form method="post" action="/tokens/pair/deny" style="display:inline;">
+              <input type="hidden" name="request_id" value="{{ p.id }}">
+              <button class="ghost btn--sm">Deny</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No pending requests.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Active tokens</h2>
+  {% if tokens %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Label</th><th>Token</th><th>Created</th><th>Last seen</th><th></th></tr></thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td><b>{{ t.label or "—" }}</b></td>
+          <td><code>{{ t.token[:6] }}…{{ t.token[-4:] }}</code></td>
+          <td class="muted">{{ t.created_at }}</td>
+          <td class="muted">{{ t.last_seen or "never" }}</td>
+          <td>
+            <form method="post" action="/tokens/revoke" onsubmit="return confirm('Revoke this token? The device loses access immediately.');">
+              <input type="hidden" name="token" value="{{ t.token }}">
+              <button class="btn--danger-quiet btn--sm">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No tokens yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

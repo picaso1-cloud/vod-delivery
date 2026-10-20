@@ -1250,15 +1250,94 @@ async def main() -> None:
             "/continue — continue watching\n"
             "/watchlist — saved titles\n"
             "/stop — stop playback\n"
+            "/token — create an app token\n"
+            "/tokens — manage app tokens\n"
             "/ping — alive check\n\n"
             "Web panel: <code>http://"
             + (proxy.lan_ip_for("192.168.1.1") or "localhost")
-            + ":8090</code>"
+            + ":8095</code>"
         )
 
     @dp.message(Command("ping"))
     async def cmd_ping(message: Message) -> None:
         await message.answer("pong 🏓")
+
+    @dp.message(Command("token"))
+    async def cmd_token(message: Message) -> None:
+        label = (message.text or "").partition(" ")[2].strip() or f"telegram:{message.from_user.id}"
+        conn = store.connect()
+        try:
+            token = store.issue_app_token(conn, label[:80])
+        finally:
+            conn.close()
+        await message.answer(
+            "🔑 <b>New app token</b>\n"
+            f"<code>{token}</code>\n\n"
+            f"Label: <b>{label[:80]}</b>\n"
+            "Paste it in the Android app's server settings, or pair the device from the App access page."
+        )
+
+    @dp.message(Command("tokens"))
+    async def cmd_tokens(message: Message) -> None:
+        conn = store.connect()
+        try:
+            rows = store.list_app_tokens(conn)
+        finally:
+            conn.close()
+        if not rows:
+            await message.answer("No app tokens yet. Send <code>/token phone</code> to create one.")
+            return
+        lines = ["🔑 <b>App tokens</b>", ""]
+        kb = []
+        for r in rows:
+            mask = f"{r['token'][:6]}…{r['token'][-4:]}"
+            label = r["label"] or "unnamed"
+            lines.append(f"• <b>{label}</b> · <code>{mask}</code> · seen {r['last_seen'] or 'never'}")
+            kb.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"🗑 Revoke {label}"[:60],
+                        callback_data=f"tok:revoke:{r['token']}",
+                    )
+                ]
+            )
+        await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+    @dp.callback_query(F.data.startswith("tok:revoke:"))
+    async def cb_token_revoke(query: CallbackQuery) -> None:
+        token = (query.data or "").split(":", 2)[2]
+        conn = store.connect()
+        try:
+            store.revoke_app_token(conn, token)
+        finally:
+            conn.close()
+        await query.answer("Token revoked")
+        await query.message.edit_text("🗑 Token revoked.")
+
+    @dp.callback_query(F.data.startswith("pair:"))
+    async def cb_pair_decision(query: CallbackQuery) -> None:
+        parts = (query.data or "").split(":", 2)
+        if len(parts) != 3:
+            await query.answer()
+            return
+        _, action, request_id = parts
+        conn = store.connect()
+        try:
+            row = store.get_pair_request(conn, request_id)
+            if row is None or row["status"] != "pending":
+                await query.answer("Already handled or expired.", show_alert=True)
+                return
+            name = row["device_name"] or "device"
+            if action == "ok":
+                store.approve_pair_request(conn, request_id)
+                text = f"✅ Approved <b>{name}</b>. The device will collect its token on the next check."
+            else:
+                store.deny_pair_request(conn, request_id)
+                text = f"⛔ Denied <b>{name}</b>."
+        finally:
+            conn.close()
+        await query.answer()
+        await query.message.edit_text(text)
 
     @dp.message(Command("tvs"))
     async def cmd_tvs(message: Message) -> None:
@@ -2676,6 +2755,8 @@ async def main() -> None:
             BotCommand(command="live", description="Live TV channels"),
             BotCommand(command="subsbackfill", description="Fetch Arabic subs (movies/tv/all)"),
             BotCommand(command="fetch", description="Hunt the video behind a page link"),
+            BotCommand(command="token", description="Create an app access token"),
+            BotCommand(command="tokens", description="Manage app tokens"),
         ]
     )
     asyncio.create_task(warm())
@@ -2935,6 +3016,36 @@ async def main() -> None:
         conn = store.connect()
         store.revoke_app_token(conn, token)
         conn.close()
+        return {"ok": True}
+
+    async def api_pair_notify(request_id: str) -> dict:
+        conn = store.connect()
+        try:
+            row = store.get_pair_request(conn, request_id)
+        finally:
+            conn.close()
+        if row is None:
+            return {"ok": False, "error": "unknown request"}
+        owner = library.owner_chat_id()
+        if not owner:
+            return {"ok": False, "error": "no owner"}
+        text = (
+            "📱 <b>New device wants access</b>\n\n"
+            f"<b>{row['device_name'] or 'Unknown device'}</b>\n"
+            f"{row['platform'] or 'unknown platform'}\n"
+            f"IP: <code>{row['ip'] or '—'}</code>\n"
+            f"Code: <code>{row['code']}</code>\n\n"
+            "Approve only if this code is shown in the app requesting access."
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Approve", callback_data=f"pair:ok:{request_id}"),
+                    InlineKeyboardButton(text="❌ Deny", callback_data=f"pair:no:{request_id}"),
+                ]
+            ]
+        )
+        await _bot.send_message(owner, text, reply_markup=kb)
         return {"ok": True}
 
     async def api_search(q: str, kind: str) -> list:
@@ -3541,7 +3652,8 @@ async def main() -> None:
              continue_watching=api_continue, progress=api_progress, set_progress=api_set_progress,
              health=api_health, events=api_events, client_log=api_client_log,
              tokens_create=api_tokens_create, tokens_list=api_tokens_list,
-             tokens_revoke=api_tokens_revoke, library_stream=api_library_stream)
+             tokens_revoke=api_tokens_revoke, library_stream=api_library_stream,
+             pair_notify=api_pair_notify)
 
     @dp.message(Command("audit"))
     async def cmd_audit(message: Message) -> None:

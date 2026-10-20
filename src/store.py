@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -166,6 +167,20 @@ CREATE TABLE IF NOT EXISTS app_tokens (
     label TEXT,
     created_at TEXT,
     last_seen TEXT
+);
+CREATE TABLE IF NOT EXISTS pair_requests (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    device_name TEXT,
+    platform TEXT,
+    instance_id TEXT,
+    ip TEXT,
+    status TEXT DEFAULT 'pending',
+    token TEXT,
+    created_at TEXT,
+    expires_at TEXT,
+    decided_at TEXT,
+    claimed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS watch_progress (
     user_id INTEGER,
@@ -579,3 +594,125 @@ def list_app_tokens(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def revoke_app_token(conn: sqlite3.Connection, token: str) -> None:
     conn.execute("DELETE FROM app_tokens WHERE token=?", (token,))
     conn.commit()
+
+
+PAIR_TTL_S = 600
+
+
+def issue_app_token(conn: sqlite3.Connection, label: str = "") -> str:
+    import secrets
+
+    token = secrets.token_urlsafe(24)
+    create_app_token(conn, token, label)
+    return token
+
+
+def _expire_pair_requests(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE pair_requests SET status='expired' WHERE status='pending' AND expires_at<?",
+        (_now(),),
+    )
+    conn.commit()
+
+
+def create_pair_request(
+    conn: sqlite3.Connection,
+    device_name: str,
+    platform: str = "",
+    instance_id: str = "",
+    ip: str = "",
+) -> dict:
+    import secrets
+
+    request_id = secrets.token_hex(12)
+    code = secrets.token_hex(4).upper()
+    created_at = _now()
+    expires_at = datetime.fromtimestamp(
+        time.time() + PAIR_TTL_S, timezone.utc
+    ).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO pair_requests(id, code, device_name, platform, instance_id, ip, status, created_at, expires_at) "
+        "VALUES(?,?,?,?,?,?,'pending',?,?)",
+        (
+            request_id,
+            code,
+            (device_name or "")[:80],
+            (platform or "")[:40],
+            (instance_id or "")[:80],
+            (ip or "")[:45],
+            created_at,
+            expires_at,
+        ),
+    )
+    conn.commit()
+    return {"id": request_id, "code": code, "expires_at": expires_at}
+
+
+def get_pair_request(conn: sqlite3.Connection, request_id: str) -> sqlite3.Row | None:
+    _expire_pair_requests(conn)
+    return conn.execute(
+        "SELECT * FROM pair_requests WHERE id=?", (request_id,)
+    ).fetchone()
+
+
+def list_pair_requests(conn: sqlite3.Connection, status: str = "pending") -> list[sqlite3.Row]:
+    _expire_pair_requests(conn)
+    return conn.execute(
+        "SELECT * FROM pair_requests WHERE status=? ORDER BY created_at DESC", (status,)
+    ).fetchall()
+
+
+def count_pending_pairs(conn: sqlite3.Connection) -> int:
+    _expire_pair_requests(conn)
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM pair_requests WHERE status='pending'"
+    ).fetchone()["c"]
+
+
+def approve_pair_request(conn: sqlite3.Connection, request_id: str) -> str | None:
+    _expire_pair_requests(conn)
+    row = conn.execute(
+        "SELECT * FROM pair_requests WHERE id=?", (request_id,)
+    ).fetchone()
+    if row is None or row["status"] != "pending":
+        return None
+    label = (row["device_name"] or "device").strip()
+    if row["platform"]:
+        label = f"{label} · {row['platform']}"
+    token = issue_app_token(conn, label[:80])
+    conn.execute(
+        "UPDATE pair_requests SET status='approved', token=?, decided_at=? WHERE id=?",
+        (token, _now(), request_id),
+    )
+    conn.commit()
+    return token
+
+
+def deny_pair_request(conn: sqlite3.Connection, request_id: str) -> bool:
+    _expire_pair_requests(conn)
+    cur = conn.execute(
+        "UPDATE pair_requests SET status='denied', decided_at=? WHERE id=? AND status='pending'",
+        (_now(), request_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def pair_status(conn: sqlite3.Connection, request_id: str, code: str) -> dict | None:
+    import hmac
+
+    _expire_pair_requests(conn)
+    row = conn.execute(
+        "SELECT * FROM pair_requests WHERE id=?", (request_id,)
+    ).fetchone()
+    if row is None or not code or not hmac.compare_digest(str(row["code"]), str(code)):
+        return None
+    if row["status"] == "approved" and row["token"]:
+        token = row["token"]
+        conn.execute(
+            "UPDATE pair_requests SET status='claimed', token=NULL, claimed_at=? WHERE id=?",
+            (_now(), request_id),
+        )
+        conn.commit()
+        return {"status": "approved", "token": token}
+    return {"status": row["status"]}

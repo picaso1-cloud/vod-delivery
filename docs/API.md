@@ -44,12 +44,27 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 | GET | `/api/app/continue` | – | `{items:[{media_key,title,poster,position,duration}]}` |
 | GET/POST | `/api/app/progress` | `media_key` (+ `position`,`duration` POST) | `{position,duration}` |
 | GET | `/api/app/events` | `since` | `{items:[{id,ts,kind,title,body}]}` |
-| GET/POST/DELETE | `/api/app/tokens` | `label` / `token` | per-device tokens |
+| GET/POST/DELETE | `/api/app/tokens` | `label` / `token` | per-device tokens (panel session or localhost only) |
+| POST | `/api/app/pair/request` | JSON `{device_name, platform, instance_id}` | `{request_id, code, expires_in}` (no auth, 6/min/IP) |
+| GET | `/api/app/pair/status` | `request_id`, `code` | `{status, token?}` — token returned once when approved |
 | POST | `/api/app/client-log` | `level`,`tag`,`message` | self-hosted app error sink |
 | GET | `/metrics` | – | Prometheus text (requests, sessions, library, provider) |
 | GET | `/api/app/episodes` | `series_id` | `{episodes:{season:[…]}, items:{season:[{episode,title,media_key,ext,duration}]}, series_id}` |
 | GET | `/api/app/live` | `q` (optional), `category_id` (optional) | array of `{kind:"live", channel_id, title, category_id, icon}` |
 | GET | `/api/app/live/categories` | – | `[{id, name, count}]` |
+
+## Device pairing (app access)
+
+The app asks for access without a token; the owner approves; the device collects a token once.
+
+1. `POST /api/app/pair/request` with `{"device_name","platform","instance_id"}` → `{request_id, code, expires_in}`.
+2. The owner approves in Telegram (inline buttons) or the web panel **App access** page (`/tokens`).
+3. `GET /api/app/pair/status?request_id=&code=` → `pending` → `approved` + `token` (once) → `claimed`.
+4. The app stores the token and sends `Authorization: Bearer <token>`.
+
+Limits: 6 requests/min/IP, 20 pending requests, 10-minute TTL. A wrong `code` returns 404. Denied/expired requests never return a token.
+
+Admin paths: web **App access** (`/tokens`, panel password) and Telegram `/token` / `/tokens`. The `/api/app/tokens` endpoints are admin-only (panel session or localhost); the panel and bot use the store directly.
 
 ## TVs and cast methods
 

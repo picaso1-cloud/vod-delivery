@@ -10,6 +10,12 @@ stream preparation (~3 s), and on-device playback with video + audio. DLNA and
 Cast TVs (server-side SCS) work; the UI uses a dark cinematic theme with bottom
 navigation.
 
+## Pairing (planned — next app build)
+
+The server side is ready: the app will POST a pair request, the owner approves it in
+Telegram or the web **App access** page, and the app polls once for its token. This
+removes manual token entry. Full UX/API plan: [`docs/PAIRING.md`](../docs/PAIRING.md).
+
 ## Build (local only)
 
 Requirements: JDK 17, Android SDK 35 / build-tools 35.0.0.
