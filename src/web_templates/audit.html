@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Audit · VOD-Delivery{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Self-audit</h1>
+  <span class="sub">LLM review of bot.log + telemetry</span>
+</div>
+
+{% if saved %}<div class="flash flash--ok"><span class="flash-icon">✓</span><span>Audit finished — see the latest findings below.</span></div>{% endif %}
+{% if error %}<div class="flash flash--err"><span class="flash-icon">⚠️</span><span>Audit failed: {{ error }}</span></div>{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h2>Runs</h2>
+    <div class="muted">Total audit cycles executed.</div>
+    <div style="font-size:32px;font-weight:700;margin-top:8px">{{ stats.runs }}</div>
+  </div>
+  <div class="card">
+    <h2>LLM skipped</h2>
+    <div class="muted">Quiet windows with nothing notable — no model call.</div>
+    <div style="font-size:32px;font-weight:700;margin-top:8px">{{ stats.quiet_skips }}</div>
+  </div>
+  <div class="card">
+    <h2>Tracked findings</h2>
+    <div class="muted">Findings still in the dedupe window.</div>
+    <div style="font-size:32px;font-weight:700;margin-top:8px">{{ stats.findings }}</div>
+  </div>
+  <div class="card">
+    <h2>Recurring</h2>
+    <div class="muted">Issues seen more than once.</div>
+    <div style="font-size:32px;font-weight:700;margin-top:8px">{{ stats.recurring }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap">
+    <div>
+      <h2 style="margin:0">Recent findings</h2>
+      <p class="muted" style="margin:6px 0 0">Newest first. Known provider quirks are filtered before they reach this list.</p>
+    </div>
+    <form method="post" action="/audit/run">
+      <button>Run audit now</button>
+    </form>
+  </div>
+
+  {% if findings %}
+  <div class="mt-4">
+    {% for f in findings %}
+    <div class="tv-card" style="padding:14px 16px;margin-bottom:10px">
+      <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
+        {% set sev = (f.get('severity') or 'low')|lower %}
+        <span class="pill {% if sev == 'high' %}pill--err{% elif sev == 'medium' %}pill--warn{% else %}pill--muted{% endif %}">
+          <span class="dot {% if sev == 'high' %}dot--err{% elif sev == 'medium' %}dot--warn{% else %}dot--muted{% endif %}"></span>{{ sev|upper }}
+        </span>
+        <b>{{ f.get('feature','?') }}</b>
+        <span class="muted" style="margin-left:auto">{{ f.get('ts','') }}</span>
+      </div>
+      <div class="mt-2">{{ f.get('observation','') }}</div>
+      {% if f.get('evidence') %}<div class="muted mt-2"><b>evidence:</b> <span class="mono">{{ f.get('evidence') }}</span></div>{% endif %}
+      <div class="muted mt-2"><b>cause:</b> {{ f.get('likely_cause','—') }}</div>
+      <div class="muted"><b>fix:</b> {{ f.get('suggested_fix','—') }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty mt-4">
+    <span class="empty-icon">🕵️</span>
+    <span class="empty-title">No findings yet</span>
+    <span class="empty-hint">The auditor runs after 5 minutes without user activity, or use “Run audit now”.</span>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

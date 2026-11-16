@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import secrets
 import threading
@@ -320,6 +321,42 @@ def stop_playback(conn=Depends(_auth)):
     except Exception:
         pass
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/audit", response_class=HTMLResponse)
+def audit_page(request: Request, conn=Depends(_auth)):
+    from . import auditor
+
+    findings = []
+    try:
+        lines = auditor.FINDINGS_PATH.read_text().splitlines()[-80:]
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            findings.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    findings.reverse()
+    return TEMPLATES.TemplateResponse(
+        request,
+        "audit.html",
+        {
+            "stats": auditor.stats(),
+            "findings": findings,
+            "saved": request.query_params.get("saved"),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@app.post("/audit/run")
+def audit_run(conn=Depends(_auth)):
+    try:
+        call_bridge("audit_now", timeout=300)
+    except Exception as exc:
+        return RedirectResponse(f"/audit?error={type(exc).__name__}", status_code=303)
+    return RedirectResponse("/audit?saved=1", status_code=303)
 
 
 @app.get("/settings", response_class=HTMLResponse)

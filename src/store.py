@@ -11,7 +11,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def arp_mac(ip: str) -> str | None:
+_ARP_CACHE: dict[str, tuple[str | None, float]] = {}
+_ARP_TTL_OK = 300.0
+_ARP_TTL_MISS = 60.0
+_ARP_CACHE_MAX = 256
+
+
+def _arp_lookup(ip: str) -> str | None:
     import re as _re
     import subprocess
 
@@ -34,6 +40,21 @@ def arp_mac(ip: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def arp_mac(ip: str) -> str | None:
+    now = time.time()
+    hit = _ARP_CACHE.get(ip)
+    if hit is not None:
+        mac, ts = hit
+        if now - ts < (_ARP_TTL_OK if mac else _ARP_TTL_MISS):
+            return mac
+    mac = _arp_lookup(ip)
+    if len(_ARP_CACHE) >= _ARP_CACHE_MAX:
+        oldest = min(_ARP_CACHE.items(), key=lambda kv: kv[1][1])[0]
+        _ARP_CACHE.pop(oldest, None)
+    _ARP_CACHE[ip] = (mac, now)
+    return mac
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS movies (
@@ -450,6 +471,8 @@ def get_progress(conn: sqlite3.Connection, user_id: int, media_key: str) -> sqli
 
 
 def set_progress(conn: sqlite3.Connection, user_id: int, media_key: str, position_s: float, duration_s: float) -> None:
+    if not media_key:
+        return
     now = _now()
     conn.execute(
         "INSERT INTO watch_progress(user_id, media_key, position_s, duration_s, updated_at) VALUES(?,?,?,?,?) "
@@ -491,11 +514,21 @@ def list_watchlist(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
 
 
 def progress_title(conn: sqlite3.Connection, media_key: str) -> str:
+    if not media_key:
+        return ""
     kind, _, ref = media_key.partition(":")
+    if not ref:
+        return media_key
     if kind == "movie":
-        row = conn.execute("SELECT title FROM movies WHERE stream_id=?", (int(ref),)).fetchone()
+        try:
+            row = conn.execute("SELECT title FROM movies WHERE stream_id=?", (int(ref),)).fetchone()
+        except ValueError:
+            return media_key
     elif kind == "episode":
-        episode_id = int(ref.split(":")[0])
+        try:
+            episode_id = int(ref.split(":")[0])
+        except ValueError:
+            return media_key
         row = conn.execute(
             "SELECT e.title, e.season, e.episode, s.title AS series_title FROM episodes e "
             "JOIN series s ON s.series_id = e.series_id WHERE e.episode_id=?", (episode_id,)
@@ -505,7 +538,10 @@ def progress_title(conn: sqlite3.Connection, media_key: str) -> str:
             return f"{base} · {row['title']}" if row["title"] and not row["title"].startswith("S") else base
         return media_key
     else:
-        row = conn.execute("SELECT title FROM series WHERE series_id=?", (int(ref),)).fetchone()
+        try:
+            row = conn.execute("SELECT title FROM series WHERE series_id=?", (int(ref),)).fetchone()
+        except ValueError:
+            return media_key
     return row["title"] if row else media_key
 
 

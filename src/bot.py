@@ -1640,7 +1640,7 @@ async def main() -> None:
                     continue
                 findings = await auditor.run_audit(force=False)
                 for f in findings:
-                    if str(f.get("severity", "")).lower() == "high":
+                    if str(f.get("severity", "")).lower() == "high" and f.get("notify", True):
                         await _notify_owner(
                             f"🕵️ Audit found a high-severity issue:\n"
                             f"<b>{f.get('feature','?')}</b>: {f.get('observation','')[:300]}\n"
@@ -3778,6 +3778,18 @@ async def main() -> None:
         return {"ok": True, "tv": {k: row[k] for k in row.keys() if k != "sink_protocols"},
                 "ip": ip, "scan": scan, "ports": ports, "protocols": protocols, "methods": methods}
 
+    async def api_audit_now() -> dict:
+        findings = await auditor.run_audit(force=True)
+        for f in findings:
+            if str(f.get("severity", "")).lower() == "high" and f.get("notify", True):
+                await _notify_owner(
+                    f"🕵️ Audit found a high-severity issue:\n"
+                    f"<b>{f.get('feature','?')}</b>: {f.get('observation','')[:300]}\n"
+                    f"Cause: {f.get('likely_cause','?')[:200]}"
+                )
+                break
+        return {"ok": True, "new": len(findings), "findings": findings}
+
     from .web import bind as web_bind
     web_bind(loop=asyncio.get_running_loop(), search=api_search, episodes=api_episodes,
              tvs=api_tvs, play=api_play, live_play=api_live_play, control=api_control, status=api_status,
@@ -3786,6 +3798,7 @@ async def main() -> None:
              app_control=api_app_control,
              app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
              banned_tvs=api_banned_tvs, ban_tv=api_ban_tv, unban_tv=api_unban_tv,
+             audit_now=api_audit_now,
              live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream,
              discover=api_discover, discover_ai=api_discover_ai, similar=api_similar,
              continue_watching=api_continue, progress=api_progress, set_progress=api_set_progress,
