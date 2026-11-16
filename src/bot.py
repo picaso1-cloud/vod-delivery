@@ -222,6 +222,10 @@ async def _persist_renderers(renderers: list[Renderer]) -> list[Renderer]:
         for r in renderers:
             ip = r.location.split("//")[-1].split(":")[0] if r.location else None
             mac = await asyncio.to_thread(store.arp_mac, ip) if ip else None
+            if mac and store.is_banned_mac(conn, mac):
+                conn.execute("UPDATE tvs SET ignored=1 WHERE mac=? OR udn=?", (mac, r.udn))
+                conn.commit()
+                continue
             store.upsert_tv(conn, r.udn, r.friendly_name, ip, r.location, mac=mac)
             ignored_row = None
             known = store.get_tv(conn, r.udn)
@@ -909,6 +913,9 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                     if control_timeouts >= 2:
                         state = "STOPPED"
                         break
+        if state == "PLAYING":
+            used = f"{mode}/{quality}"
+            break
         if proxy_token and mode in ("cache", "proxy", "virtual"):
             try:
                 await proxy.stop_session(proxy_token)
@@ -1354,6 +1361,46 @@ async def main() -> None:
             f"Found {len(renderers)} TV(s):\n{names}\n\nPick the one to cast to (rename in the web panel).",
             reply_markup=_tv_keyboard(session),
         )
+
+    @dp.message(Command("bantv"))
+    async def cmd_bantv(message: Message) -> None:
+        parts = (message.text or "").split(maxsplit=1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+        if not target:
+            await message.answer("Usage: <code>/bantv &lt;MAC or TV name&gt;</code>\nBanned TVs never show up in /tvs, scans, the web panel or the app.")
+            return
+        conn = store.connect()
+        try:
+            mac = store.normalize_mac(target)
+            row = None
+            if not mac:
+                row = store.find_tv_by_name(conn, target)
+                mac = store.normalize_mac(row["mac"]) if row and row["mac"] else None
+            if not mac:
+                await message.answer("Could not resolve a MAC. Send the MAC address (AA:BB:CC:DD:EE:FF).")
+                return
+            store.ban_tv(conn, mac, row["name"] if row else target)
+        finally:
+            conn.close()
+        await message.answer(f"🚫 Banned <code>{mac}</code> — hidden from /tvs, scans, the panel and the app.")
+
+    @dp.message(Command("unbantv"))
+    async def cmd_unbantv(message: Message) -> None:
+        parts = (message.text or "").split(maxsplit=1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+        if not target:
+            await message.answer("Usage: <code>/unbantv &lt;MAC&gt;</code>")
+            return
+        conn = store.connect()
+        try:
+            mac = store.normalize_mac(target)
+            if not mac:
+                await message.answer("Send the MAC address (AA:BB:CC:DD:EE:FF).")
+                return
+            store.unban_tv(conn, mac)
+        finally:
+            conn.close()
+        await message.answer(f"✅ Unbanned <code>{mac}</code>.")
 
     @dp.message(Command("stop"))
     async def cmd_stop(message: Message) -> None:
@@ -2747,6 +2794,8 @@ async def main() -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="tvs", description="Find and pick a TV"),
+            BotCommand(command="bantv", description="Ban a TV by MAC (hide it everywhere)"),
+            BotCommand(command="unbantv", description="Unban a TV by MAC"),
             BotCommand(command="continue", description="Continue watching"),
             BotCommand(command="watchlist", description="Saved titles"),
             BotCommand(command="stop", description="Stop playback"),
@@ -3087,9 +3136,48 @@ async def main() -> None:
 
     async def api_tvs() -> list:
         conn = store.connect()
-        rows = conn.execute("SELECT name, ip, kind, prefer_proxy, downgrade, ignored FROM tvs WHERE ignored=0").fetchall()
+        rows = conn.execute("SELECT name, ip, mac, kind, prefer_proxy, downgrade, ignored FROM tvs WHERE ignored=0").fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    async def api_ban_tv(mac: str = "", label: str = "") -> dict:
+        conn = store.connect()
+        try:
+            identity = store.normalize_mac(mac)
+            if not identity and label:
+                row = store.find_tv_by_name(conn, label)
+                identity = store.normalize_mac(row["mac"]) if row and row["mac"] else None
+            if not identity:
+                return {"ok": False, "error": "MAC address required"}
+            store.ban_tv(conn, identity, label)
+        finally:
+            conn.close()
+        return {"ok": True, "mac": identity}
+
+    async def api_unban_tv(mac: str = "") -> dict:
+        if not store.normalize_mac(mac):
+            return {"ok": False, "error": "MAC address required"}
+        conn = store.connect()
+        try:
+            store.unban_tv(conn, mac)
+        finally:
+            conn.close()
+        return {"ok": True, "mac": store.normalize_mac(mac)}
+
+    async def api_banned_tvs() -> dict:
+        conn = store.connect()
+        try:
+            banned = [dict(r) for r in store.list_banned(conn)]
+            rows = conn.execute("SELECT name, ip, mac FROM tvs WHERE ignored=1").fetchall()
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "banned": banned,
+            "macs": sorted({b["mac"] for b in banned} | {r["mac"] for r in rows if r["mac"]}),
+            "ips": sorted({r["ip"] for r in rows if r["ip"]}),
+            "names": sorted({r["name"] for r in rows}),
+        }
 
     async def _resolve_renderer(tv_name: str):
         from .ssdp import Renderer, discover_renderers
@@ -3638,8 +3726,8 @@ async def main() -> None:
             store.set_tv_sink_protocols(conn, row["udn"], protocols)
         store.set_tv_cast_methods(conn, row["udn"], {"methods": methods, "at": now, "ports": ports})
         conn.close()
-        return {"ok": True, "tv": row["name"], "ip": ip, "scan": scan,
-                "ports": ports, "protocols": protocols, "methods": methods}
+        return {"ok": True, "tv": {k: row[k] for k in row.keys() if k != "sink_protocols"},
+                "ip": ip, "scan": scan, "ports": ports, "protocols": protocols, "methods": methods}
 
     from .web import bind as web_bind
     web_bind(loop=asyncio.get_running_loop(), search=api_search, episodes=api_episodes,
@@ -3647,6 +3735,7 @@ async def main() -> None:
              test_virtual=api_test_virtual,
              app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control,
              app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
+             banned_tvs=api_banned_tvs, ban_tv=api_ban_tv, unban_tv=api_unban_tv,
              live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream,
              discover=api_discover, discover_ai=api_discover_ai, similar=api_similar,
              continue_watching=api_continue, progress=api_progress, set_progress=api_set_progress,

@@ -95,6 +95,7 @@ import com.souhail.vodcast.cast.CastCaster
 import com.souhail.vodcast.cast.DlnaCaster
 import com.souhail.vodcast.cast.DlnaDevice
 import com.souhail.vodcast.data.Api
+import com.souhail.vodcast.data.BannedEntry
 import com.souhail.vodcast.data.CastMethod
 import com.souhail.vodcast.data.ContinueItem
 import com.souhail.vodcast.data.DiscoverResponse
@@ -1616,15 +1617,59 @@ private fun TvScreen(
     var tvs by remember { mutableStateOf<List<TvInfo>>(emptyList()) }
     var devices by remember { mutableStateOf<List<DlnaDevice>>(emptyList()) }
     var methods by remember { mutableStateOf<Map<String, List<CastMethod>>>(emptyMap()) }
+    var bannedIps by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var bannedNames by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var banned by remember { mutableStateOf<List<BannedEntry>>(emptyList()) }
+    var showBan by remember { mutableStateOf(false) }
+    var banMac by remember { mutableStateOf("") }
+    var banLabel by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        try {
-            tvs = api.tvs()
-        } catch (e: Exception) {
-            notify(e.message ?: "failed to load TVs")
+    fun reload() {
+        scope.launch {
+            try {
+                tvs = api.tvs()
+            } catch (e: Exception) {
+                notify(e.message ?: "failed to load TVs")
+            }
+            runCatching { api.bannedTvs() }.onSuccess {
+                banned = it.banned
+                bannedIps = it.ips.toSet()
+                bannedNames = it.names.toSet()
+                AppLog.i("TVS", "banned=${it.banned.size} ips=${it.ips.size}")
+            }
         }
     }
+
+    fun ban(mac: String, label: String) {
+        scope.launch {
+            try {
+                AppLog.action("ban_tv", "$mac $label")
+                val res = api.banTv(mac, label)
+                notify(if (res.ok) "Banned $mac" else (res.error ?: "Ban failed"))
+                reload()
+            } catch (e: Exception) {
+                AppLog.e("TVS", "ban failed", e)
+                notify(e.message ?: "Ban failed")
+            }
+        }
+    }
+
+    fun unban(mac: String) {
+        scope.launch {
+            try {
+                AppLog.action("unban_tv", mac)
+                val res = api.unbanTv(mac)
+                notify(if (res.ok) "Unbanned $mac" else (res.error ?: "Unban failed"))
+                reload()
+            } catch (e: Exception) {
+                AppLog.e("TVS", "unban failed", e)
+                notify(e.message ?: "Unban failed")
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { reload() }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1633,7 +1678,8 @@ private fun TvScreen(
                     scope.launch {
                         busy = true
                         try {
-                            devices = DlnaCaster(context).discover()
+                            val found = DlnaCaster(context).discover()
+                            devices = found.filter { d -> d.ip !in bannedIps && d.name !in bannedNames }
                             if (devices.isEmpty()) notify("No DLNA renderers answered SSDP")
                         } catch (e: Exception) {
                             notify(e.message ?: "discovery failed")
@@ -1649,6 +1695,7 @@ private fun TvScreen(
                 Text("Discover DLNA")
             }
             if (busy) CircularProgressIndicator(Modifier.size(22.dp))
+            TextButton(onClick = { showBan = true }) { Text("Ban MAC") }
         }
         Spacer(Modifier.height(10.dp))
         LazyColumn(Modifier.fillMaxSize()) {
@@ -1709,6 +1756,9 @@ private fun TvScreen(
                                     }
                                 }
                                 }) { Text("Probe") }
+                                tv.mac?.let { mac ->
+                                    TextButton(onClick = { ban(mac, tv.name) }) { Text("Ban") }
+                                }
                             }
                         },
                     )
@@ -1742,7 +1792,61 @@ private fun TvScreen(
                     )
                 }
             }
+            if (banned.isNotEmpty()) {
+                item { SectionHeader("Banned devices", "Hidden from /tvs, scans, the panel and this app.") }
+                items(banned) { entry ->
+                    ListItem(
+                        leadingContent = {
+                            Icon(Icons.Default.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                        },
+                        headlineContent = { Text(entry.mac) },
+                        supportingContent = { entry.label?.takeIf { it.isNotBlank() }?.let { Text(it) } },
+                        trailingContent = {
+                            TextButton(onClick = { unban(entry.mac) }) { Text("Unban") }
+                        },
+                    )
+                }
+            }
         }
+    }
+    if (showBan) {
+        AlertDialog(
+            onDismissRequest = { showBan = false },
+            title = { Text("Ban a TV by MAC") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = banMac,
+                        onValueChange = { banMac = it },
+                        label = { Text("MAC (AA:BB:CC:DD:EE:FF)") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = banLabel,
+                        onValueChange = { banLabel = it },
+                        label = { Text("Label (optional)") },
+                        singleLine = true,
+                    )
+                    Text(
+                        "A banned TV never appears in /tvs, scans, the web panel or this app.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val mac = banMac.trim()
+                        if (mac.isNotBlank()) ban(mac, banLabel.trim())
+                        banMac = ""
+                        banLabel = ""
+                        showBan = false
+                    },
+                ) { Text("Ban") }
+            },
+            dismissButton = { TextButton(onClick = { showBan = false }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -1762,7 +1866,9 @@ private fun PlayDialog(
     var target by remember(selectedTv) {
         mutableStateOf(if (selectedTv?.kind == "cast") "cast" else "dlna")
     }
-    var quality by remember { mutableStateOf("copy") }
+    var quality by remember(selectedTv) {
+        mutableStateOf(if (selectedTv?.downgrade == 1) "downgrade" else "copy")
+    }
     var usePublic by remember { mutableStateOf(!usingLan) }
     var prepared by remember { mutableStateOf<StreamInfo?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -1774,8 +1880,9 @@ private fun PlayDialog(
             error = null
             AppLog.action("prepare", "media=${pending.mediaKey} target=$target live=${pending.isLive}")
             try {
-                if (target == "cast" && selectedTv?.kind == "cast") {
-                    AppLog.action("prepare", "server-side SCS cast to ${selectedTv.name}")
+                val registered = selectedTv?.let { it.mac != null || it.kind == "cast" } == true
+                if (registered) {
+                    AppLog.action("prepare", "server-side cast via ${selectedTv?.name}")
                     prepared = StreamInfo(ok = true, title = pending.title, mode = "server")
                     return@launch
                 }
@@ -1820,7 +1927,7 @@ private fun PlayDialog(
     fun start() {
         val stream = prepared ?: return
         val picked = selectedTv
-        if (target == "cast" && picked?.kind == "cast") {
+        if (target != "player" && picked != null && (picked.mac != null || picked.kind == "cast")) {
             scope.launch {
                 busy = true
                 try {

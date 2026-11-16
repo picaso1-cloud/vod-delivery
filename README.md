@@ -109,6 +109,46 @@ Highlights:
 - Do not expose the panel (`:8095`) or the unsigned `/stream/` route to the internet; expose only `/api/app/*` and `/s/*` through a reverse proxy.
 - TV discovery and DLNA casting operate on the local network only.
 
+## Android client
+
+`android/` is a native Kotlin/Compose client (`com.souhail.vodcast`): AI discover,
+Live TV, library/queue/watchlist, on-device playback, and casting through the
+server. Builds are local (JDK 17, Android SDK 35, Gradle 8.9):
+
+```bash
+cd android
+ANDROID_HOME=/opt/android/sdk ./gradlew :app:assembleRelease
+# APKs land in android/dist/ (vodcast-v0.2.apk, vodcast-debug.apk)
+```
+
+Casting rules the app follows:
+
+- Registered TVs (anything with a MAC, or `kind=cast`) are cast **server-side**
+  via `POST /api/app/play` — the server's ladder, wedge breaker and byte-truth
+  checks are what actually keep a TV playing. Phone-direct DLNA is only used
+  for renderers found by local SSDP that are not registered.
+- TVs with `downgrade=1` (4K-HEVC panels) default to the 1080p transcode.
+- Banned TVs (MAC ban list) are hidden from the TV screen and local discovery.
+
+## Changelog
+
+### 0.2.0 — 2026-11-16
+
+- **Fix: casts dying after 20-30 s.** The cast ladder never broke out on success:
+  it stopped the session that was serving a PLAYING TV, then re-cast the next
+  mode 30 s later. The TV played only its initial buffer and went black. The
+  ladder now breaks with the winning mode and keeps that session.
+- **Fix: Cast button crash** (`MainActivity` must extend `FragmentActivity`
+  for `MediaRouteButton`'s route dialog).
+- **Fix: search HTTP 500** after the weekly index rebuild — the running process
+  kept the old vector index in memory. The index reloads when `index.bin`
+  changes and allowlists are intersected with ids the index actually contains.
+- **TV ban list by MAC** (`banned_tvs`): hides devices from discovery, scans,
+  the bot, the web panel and the app. Manage it from the app (Ban button,
+  Ban MAC dialog, Unban), Telegram (`/bantv`, `/unbantv`) or the web panel.
+- Android app now preselects the 1080p transcode for `downgrade` TVs and casts
+  registered TVs through the server.
+
 ## License
 
 No license has been chosen yet. Add one before accepting external contributions.

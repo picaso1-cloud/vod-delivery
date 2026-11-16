@@ -1,4 +1,5 @@
 import re
+import threading
 import unicodedata
 import sqlite3
 from dataclasses import dataclass, field
@@ -35,12 +36,20 @@ class Group:
 
 
 _index = None
+_index_mtime = None
+_index_lock = threading.Lock()
 
 
 def _get_index() -> VectorIndex:
-    global _index
-    if _index is None:
-        _index = VectorIndex.load(INDEX_PATH)
+    global _index, _index_mtime
+    try:
+        mtime = INDEX_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+    with _index_lock:
+        if _index is None or mtime != _index_mtime:
+            _index = VectorIndex.load(INDEX_PATH)
+            _index_mtime = mtime
     return _index
 
 

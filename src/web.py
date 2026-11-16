@@ -190,7 +190,15 @@ def _title_for(conn, media_key: str) -> str:
 
 @app.get("/tvs", response_class=HTMLResponse)
 def tvs_page(request: Request, conn=Depends(_auth)):
-    return TEMPLATES.TemplateResponse(request, "tvs.html", {"tvs": store.list_tvs(conn), "saved": request.query_params.get("saved")})
+    return TEMPLATES.TemplateResponse(
+        request,
+        "tvs.html",
+        {
+            "tvs": store.list_tvs(conn, include_ignored=False),
+            "banned": store.list_banned(conn),
+            "saved": request.query_params.get("saved"),
+        },
+    )
 
 
 @app.post("/tvs/{udn}/rename")
@@ -213,7 +221,27 @@ def tv_flags(udn: str, wol: str = Form(""), prefer_proxy: str = Form(""), downgr
         mac=mac.strip() or None,
     )
     conn.execute("UPDATE tvs SET ignored=? WHERE udn=?", (1 if ignored == "on" else 0, udn))
+    row = conn.execute("SELECT mac, name FROM tvs WHERE udn=?", (udn,)).fetchone()
+    if row and row["mac"]:
+        if ignored == "on":
+            store.ban_tv(conn, row["mac"], row["name"])
+        else:
+            store.unban_tv(conn, row["mac"])
     conn.commit()
+    return RedirectResponse("/tvs?saved=1", status_code=303)
+
+
+@app.post("/tvs/ban")
+def tv_ban(mac: str = Form(""), label: str = Form(""), conn=Depends(_auth)):
+    if not store.normalize_mac(mac):
+        return RedirectResponse("/tvs?error=Enter+a+MAC+address+to+ban", status_code=303)
+    store.ban_tv(conn, mac, label)
+    return RedirectResponse("/tvs?saved=1", status_code=303)
+
+
+@app.post("/tvs/unban")
+def tv_unban(mac: str = Form(""), conn=Depends(_auth)):
+    store.unban_tv(conn, mac)
     return RedirectResponse("/tvs?saved=1", status_code=303)
 
 
@@ -226,6 +254,11 @@ async def tv_scan(ip: str = Form(""), conn=Depends(_auth)):
     result = await scan_ip(ip)
     if result.get("validated"):
         udn = register(result)
+        if udn is None:
+            return RedirectResponse(
+                "/tvs?error=This+device+is+banned+%28MAC+%s%29" % result.get("mac", "?"),
+                status_code=303,
+            )
         kind = result["kind"]
         return RedirectResponse(
             f"/tvs?saved=1&scan={kind}+TV+identified%3A+{result.get('name','?')}+%28{ip}%29+and+registered",
@@ -237,6 +270,9 @@ async def tv_scan(ip: str = Form(""), conn=Depends(_auth)):
 
 @app.post("/tvs/{udn}/delete")
 def tv_delete(udn: str, conn=Depends(_auth)):
+    row = conn.execute("SELECT mac, name, ignored FROM tvs WHERE udn=?", (udn,)).fetchone()
+    if row and row["ignored"] and row["mac"]:
+        store.ban_tv(conn, row["mac"], row["name"])
     store.delete_tv(conn, udn)
     return RedirectResponse("/tvs", status_code=303)
 
@@ -747,9 +783,30 @@ async def app_tv_scan(ip: str = ""):
         raise HTTPException(status_code=422, detail="invalid IP")
     result = await scan_ip(ip)
     if result.get("validated"):
-        register(result)
+        registered = register(result)
+        if registered is None:
+            return {"ok": False, "banned": True, "error": "this device's MAC is banned"}
         return {"ok": True, "kind": result.get("kind"), "name": result.get("name"), "ip": ip}
     return {"ok": False, "notes": result.get("notes", [])}
+
+
+@app.get("/api/app/tvs/banned", dependencies=[Depends(_app_auth)])
+async def app_tv_banned():
+    return call_bridge("banned_tvs")
+
+
+@app.post("/api/app/tvs/ban", dependencies=[Depends(_app_auth)])
+async def app_tv_ban(mac: str = "", label: str = ""):
+    if not mac.strip() and not label.strip():
+        raise HTTPException(status_code=422, detail="mac required")
+    return call_bridge("ban_tv", mac, label)
+
+
+@app.post("/api/app/tvs/unban", dependencies=[Depends(_app_auth)])
+async def app_tv_unban(mac: str = ""):
+    if not mac.strip():
+        raise HTTPException(status_code=422, detail="mac required")
+    return call_bridge("unban_tv", mac)
 
 
 @app.post("/api/app/tvs/wake", dependencies=[Depends(_app_auth)])

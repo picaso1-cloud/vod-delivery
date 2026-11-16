@@ -70,9 +70,12 @@ Admin paths: web **App access** (`/tokens`, panel password) and Telegram `/token
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| GET | `/api/app/tvs` | – | `[{name, ip, kind, prefer_proxy, downgrade}]` |
+| GET | `/api/app/tvs` | – | `[{name, ip, mac, kind, prefer_proxy, downgrade}]` |
 | GET | `/api/app/tvs/detail` | `name` | `{ok, tv, protocols, methods:[{method,available,detail,verified_at}], last_probe}` |
 | POST | `/api/app/tvs/probe` | `name` | same shape — runs SSDP/description and port probes for cast/dial/roku/airplay/webos |
+| GET | `/api/app/tvs/banned` | – | `{ok, banned:[{mac,label,created_at}], macs, ips, names}` |
+| POST | `/api/app/tvs/ban` | `mac`, `label` | `{ok, mac}` — hides the device everywhere |
+| POST | `/api/app/tvs/unban` | `mac` | `{ok, mac}` |
 
 All `POST` parameters are **query parameters** (`?key=value`), not a form or JSON body.
 
@@ -144,11 +147,14 @@ credential.
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| GET | `/api/app/tvs` | – | array of `{name, ip, kind, prefer_proxy, downgrade, ignored}` |
-| POST | `/api/app/tvs/scan` | `ip` | `{ok, kind, name}` or `{ok:false, notes}` |
+| GET | `/api/app/tvs` | – | array of `{name, ip, mac, kind, prefer_proxy, downgrade, ignored}` |
+| POST | `/api/app/tvs/scan` | `ip` | `{ok, kind, name}` or `{ok:false, notes}` (banned MACs are refused) |
 | POST | `/api/app/tvs/wake` | `name` | `{ok, mac}` (Wake-on-LAN) |
 | POST | `/api/app/tvs/flags` | `name`, `prefer_proxy`, `downgrade`, `v2_seek`, `virtual_channel` (0/1) | `{ok, tv}` |
 | POST | `/api/app/tvs/rename` | `name`, `new_name` | `{ok, name}` |
+| GET | `/api/app/tvs/banned` | – | `{ok, banned:[{mac,label,created_at}], macs, ips, names}` |
+| POST | `/api/app/tvs/ban` | `mac`, `label` | `{ok, mac}` — MAC ban list, hidden from every TV surface |
+| POST | `/api/app/tvs/unban` | `mac` | `{ok, mac}` |
 
 ## Library, queue, watchlist, history
 

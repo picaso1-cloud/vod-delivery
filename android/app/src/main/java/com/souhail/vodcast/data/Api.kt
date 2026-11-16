@@ -78,6 +78,14 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun tvDetail(name: String): TvDetail =
         json.decodeFromString(exec("api/app/tvs/detail", mapOf("name" to name)))
 
+    suspend fun bannedTvs(): BannedTvs = json.decodeFromString(exec("api/app/tvs/banned"))
+
+    suspend fun banTv(mac: String, label: String = ""): ControlResult =
+        json.decodeFromString(exec("api/app/tvs/ban", mapOf("mac" to mac, "label" to label), post = true))
+
+    suspend fun unbanTv(mac: String): ControlResult =
+        json.decodeFromString(exec("api/app/tvs/unban", mapOf("mac" to mac), post = true))
+
     suspend fun probe(name: String): TvDetail =
         json.decodeFromString(exec("api/app/tvs/probe", mapOf("name" to name), post = true))
 

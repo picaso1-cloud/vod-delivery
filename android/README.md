@@ -4,11 +4,30 @@ Native Kotlin/Compose client for the VOD-delivery service. It searches the
 catalog through the app API, prepares a signed stream link, and casts it to a
 DLNA TV, a Chromecast, or plays it locally.
 
-**Status:** P2 — verified on a Samsung SM-F946B (Android 13): launch, connect, async AI search,
+**Status:** v0.2.0 — verified on a Samsung SM-F946B (Android 13): launch, connect, async AI search,
 Discover (AI picks + by-name + by-meaning), Live TV, library playback, TV list,
-stream preparation (~3 s), and on-device playback with video + audio. DLNA and
-Cast TVs (server-side SCS) work; the UI uses a dark cinematic theme with bottom
-navigation.
+stream preparation, server-side casting and on-device playback. The UI uses a
+dark cinematic theme with bottom navigation.
+
+## Casting (v0.2.0)
+
+- Registered TVs (any row with a MAC, or `kind=cast`) are cast **server-side**
+  through `POST /api/app/play` / `live/play`. The server owns the cast ladder,
+  the wedge breaker, byte-truth verification and the TV's `downgrade` flag.
+- Phone-direct DLNA (`SetAVTransportURI` from the app) is only used for
+  renderers discovered locally over SSDP that are not registered.
+- TVs with `downgrade=1` preselect the 1080p transcode in the play sheet.
+- The **Cast** button in the top bar is a Google Cast route picker; a session
+  must be chosen there before "Cast" can load a receiver.
+
+## TV ban list
+
+The TVs screen manages the server's MAC ban list: a **Ban** button on each TV,
+a **Ban MAC** dialog (for devices not listed yet), and a **Banned devices**
+section with **Unban**. Banned TVs never appear in the list, scans, the bot or
+the web panel. The same list is editable from Telegram (`/bantv`, `/unbantv`)
+and the web panel (TVs → Banned devices).
+
 
 ## Pairing (planned — next app build)
 
@@ -26,8 +45,10 @@ cd android
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The project is built on this machine; no CI service is used. A ready debug
-build is copied to `android/dist/vodcast-debug.apk` after each build.
+The project is built on this machine; no CI service is used. Ready builds are
+copied to `android/dist/` after each build (`vodcast-v0.2.apk` release,
+`vodcast-debug.apk` debug). Both are signed with the local debug key, so they
+install over each other.
 
 If `./gradlew` is not executable: `chmod +x gradlew`.
 Point Gradle at the SDK with `ANDROID_HOME` or `android/local.properties`:

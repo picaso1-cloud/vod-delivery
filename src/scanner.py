@@ -124,11 +124,18 @@ async def _validate_dlna(location: str) -> tuple[str | None, bool]:
         return None, False
 
 
-def register(result: dict, name: str | None = None) -> str:
+def register(result: dict, name: str | None = None) -> str | None:
     conn = store.connect()
     try:
         mac = result.get("mac")
         kind = result.get("kind") or "dlna"
+        if mac and store.is_banned_mac(conn, mac):
+            conn.execute(
+                "UPDATE tvs SET ignored=1 WHERE mac=? OR udn=?",
+                (store.normalize_mac(mac), f"{kind}::{mac.replace(':', '')}"),
+            )
+            conn.commit()
+            return None
         udn = f"{kind}::{(mac or result['ip']).replace(':', '')}"
         display = name or result.get("name") or f"{kind.upper()} {result['ip']}"
         existing = store.find_tv_by_mac(conn, mac) if mac else None

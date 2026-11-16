@@ -21,7 +21,12 @@ class VectorIndex:
     def search(self, query_vec: np.ndarray, k: int, allowlist: np.ndarray | None = None) -> list[tuple[int, float]]:
         with _lock:
             queries = np.ascontiguousarray(query_vec.reshape(1, -1), dtype=np.float32)
-            allowed = np.ascontiguousarray(allowlist, dtype=np.uint64) if allowlist is not None else None
+            allowed = None
+            if allowlist is not None:
+                keep = [g for g in np.asarray(allowlist).ravel().tolist() if self.index.contains(int(g))]
+                if not keep:
+                    return []
+                allowed = np.ascontiguousarray(keep, dtype=np.uint64)
             results = self.index.search(queries, k, allowlist=allowed)
         scores_out = np.asarray(results[0]).ravel()
         ids_out = np.asarray(results[1]).ravel()

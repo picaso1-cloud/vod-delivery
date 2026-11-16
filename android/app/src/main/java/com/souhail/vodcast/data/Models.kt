@@ -44,6 +44,7 @@ data class EpisodesResponse(
 data class TvInfo(
     val name: String = "",
     val ip: String? = null,
+    val mac: String? = null,
     val kind: String? = null,
     val prefer_proxy: Int = 0,
     val downgrade: Int = 0,
@@ -77,6 +78,22 @@ data class TvDetail(
     val methods: List<CastMethod> = emptyList(),
     val last_probe: String? = null,
     val error: String? = null,
+)
+
+@Serializable
+data class BannedEntry(
+    val mac: String = "",
+    val label: String? = null,
+    val created_at: String? = null,
+)
+
+@Serializable
+data class BannedTvs(
+    val ok: Boolean = false,
+    val banned: List<BannedEntry> = emptyList(),
+    val macs: List<String> = emptyList(),
+    val ips: List<String> = emptyList(),
+    val names: List<String> = emptyList(),
 )
 
 @Serializable

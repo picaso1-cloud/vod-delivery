@@ -135,6 +135,11 @@ CREATE TABLE IF NOT EXISTS tvs (
     ignored INTEGER DEFAULT 0,
     last_seen TEXT
 );
+CREATE TABLE IF NOT EXISTS banned_tvs (
+    mac TEXT PRIMARY KEY,
+    label TEXT,
+    created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS plays (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -292,11 +297,53 @@ def upsert_tv(
             "INSERT INTO tvs(udn, name, ip, mac, location, source, last_seen, kind) VALUES(?,?,?,?,?,?,?,?)",
             (udn, name, ip, mac, location, source, now, kind),
         )
+    if mac and is_banned_mac(conn, mac):
+        conn.execute("UPDATE tvs SET ignored=1 WHERE udn=?", (udn,))
     conn.commit()
 
 
 def find_tv_by_mac(conn: sqlite3.Connection, mac: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM tvs WHERE mac=?", (mac,)).fetchone()
+
+
+def normalize_mac(mac: str | None) -> str | None:
+    if not mac:
+        return None
+    cleaned = mac.strip().lower().replace("-", ":")
+    return cleaned or None
+
+
+def ban_tv(conn: sqlite3.Connection, mac: str, label: str | None = None) -> None:
+    identity = normalize_mac(mac)
+    if not identity:
+        return
+    conn.execute(
+        "INSERT INTO banned_tvs(mac, label, created_at) VALUES(?,?,?) "
+        "ON CONFLICT(mac) DO UPDATE SET label=COALESCE(excluded.label, banned_tvs.label)",
+        (identity, (label or "").strip() or None, _now()),
+    )
+    conn.execute("UPDATE tvs SET ignored=1 WHERE mac=?", (identity,))
+    conn.commit()
+
+
+def unban_tv(conn: sqlite3.Connection, mac: str) -> None:
+    identity = normalize_mac(mac)
+    if not identity:
+        return
+    conn.execute("DELETE FROM banned_tvs WHERE mac=?", (identity,))
+    conn.execute("UPDATE tvs SET ignored=0 WHERE mac=?", (identity,))
+    conn.commit()
+
+
+def is_banned_mac(conn: sqlite3.Connection, mac: str | None) -> bool:
+    identity = normalize_mac(mac)
+    if not identity:
+        return False
+    return conn.execute("SELECT 1 FROM banned_tvs WHERE mac=?", (identity,)).fetchone() is not None
+
+
+def list_banned(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM banned_tvs ORDER BY created_at DESC").fetchall()
 
 
 def rename_tv(conn: sqlite3.Connection, udn: str, name: str) -> None:
@@ -367,8 +414,10 @@ def get_tv_sink_protocols(conn: sqlite3.Connection, udn: str) -> dict | None:
         return None
 
 
-def list_tvs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM tvs ORDER BY name").fetchall()
+def list_tvs(conn: sqlite3.Connection, include_ignored: bool = True) -> list[sqlite3.Row]:
+    if include_ignored:
+        return conn.execute("SELECT * FROM tvs ORDER BY name").fetchall()
+    return conn.execute("SELECT * FROM tvs WHERE ignored=0 ORDER BY name").fetchall()
 
 
 def get_tv(conn: sqlite3.Connection, udn: str) -> sqlite3.Row | None:
