@@ -691,6 +691,8 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
             async with session.stdout_lock:
                 with session.path.open("ab") as fh:
                     fh.write(chunk)
+            if not session.ready.is_set():
+                session.ready.set()
             spawn_bytes += len(chunk)
         await proc.wait()
         if session.done:

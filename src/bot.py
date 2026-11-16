@@ -835,6 +835,10 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                 if not primed:
                     logger.error("cache session %s empty after 20s — provider busy or down, aborting cast", session_obj.token)
                     telemetry.emit("cast", "attempt", "aborted", reason="session never primed", mode=mode, quality=quality)
+                    try:
+                        await proxy.stop_session(session_obj.token)
+                    except Exception:
+                        logger.debug("failed to stop unprimed session", exc_info=True)
                     return (
                         "⚠️ Couldn't pull the stream from the provider (busy or down) — nothing was cast. "
                         "Try again in a minute."

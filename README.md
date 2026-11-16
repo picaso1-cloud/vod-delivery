@@ -132,6 +132,21 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.1 — 2026-11-16
+
+- **Fix: failed casts poisoned the provider.** When a cache session never
+  produced bytes, the abort path returned without stopping it, so the ffmpeg
+  reader kept the single provider connection and every retry failed with
+  "provider busy or down". The abort now stops the session, and the feed marks
+  its session ready on the first chunk so a healthy cast starts immediately.
+- **Audio picker is usable**: a vertical list of every track with full language
+  names (German, English, Spanish, …), codec/channels and the default marker;
+  the dialog scrolls when there are many tracks. Subtitle languages are listed
+  the same way.
+- Probing an empty/failed file is cached for 1 h so reopening the sheet does not
+  re-probe slowly every time.
+- Remote controls no longer overflow (Stop wrapped its label).
+
 ### 0.3.0 — 2026-11-16
 
 - **Track discovery**: the server now ffprobes a stream on first use and stores

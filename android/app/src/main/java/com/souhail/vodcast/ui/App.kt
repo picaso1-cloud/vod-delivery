@@ -60,6 +60,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -1177,6 +1178,36 @@ private fun FilterDialog(
 
 private fun filterToSummary(yearTo: Int): String = if (yearTo > 0) "≤$yearTo" else ""
 
+private val ISO3_TO_ISO1 = mapOf(
+    "ara" to "ar", "eng" to "en", "fre" to "fr", "fra" to "fr", "ger" to "de", "deu" to "de",
+    "spa" to "es", "ita" to "it", "por" to "pt", "nld" to "nl", "dut" to "nl", "dan" to "da",
+    "fin" to "fi", "nor" to "no", "swe" to "sv", "tur" to "tr", "pol" to "pl", "gre" to "el",
+    "ell" to "el", "rus" to "ru", "hin" to "hi", "jpn" to "ja", "kor" to "ko", "chi" to "zh",
+    "zho" to "zh", "heb" to "he", "per" to "fa", "fas" to "fa", "urd" to "ur", "mal" to "ml",
+    "tam" to "ta", "tel" to "te", "ben" to "bn", "ind" to "id", "vie" to "vi", "tha" to "th",
+    "ukr" to "uk", "ron" to "ro", "rum" to "ro", "ces" to "cs", "cze" to "cs", "hun" to "hu",
+    "bul" to "bg", "hrv" to "hr", "srp" to "sr", "slk" to "sk", "slo" to "sk", "slv" to "sl",
+    "lit" to "lt", "lav" to "lv", "est" to "et", "isl" to "is", "ice" to "is", "cat" to "ca",
+    "glg" to "gl", "eus" to "eu", "baq" to "eu", "afr" to "af", "swa" to "sw", "amh" to "am",
+    "fil" to "tl", "tgl" to "tl", "mul" to "mul", "und" to "und",
+)
+
+private fun languageName(code: String?): String {
+    if (code.isNullOrBlank()) return "Original audio"
+    val lower = code.lowercase()
+    if (lower == "mul") return "Multiple languages"
+    if (lower == "und") return "Undefined"
+    val tag = ISO3_TO_ISO1[lower] ?: lower
+    return runCatching {
+        val display = java.util.Locale.forLanguageTag(tag).getDisplayLanguage(java.util.Locale.ENGLISH)
+        if (display.isNotBlank() && display.lowercase() != tag) {
+            display.replaceFirstChar { it.uppercase() }
+        } else {
+            lower.uppercase()
+        }
+    }.getOrDefault(lower.uppercase())
+}
+
 private fun formatTime(seconds: Double): String {
     val total = seconds.toInt().coerceAtLeast(0)
     val h = total / 3600
@@ -2202,7 +2233,10 @@ private fun PlayDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text("Play on", style = MaterialTheme.typography.labelLarge)
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                     listOf("dlna" to "DLNA TV", "player" to "Phone", "cast" to "Cast")
@@ -2252,32 +2286,48 @@ private fun PlayDialog(
                     val audio = tracks?.audio.orEmpty()
                     if (audio.size > 1) {
                         Text("Audio", style = MaterialTheme.typography.labelLarge)
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(audio) { track ->
-                                FilterChip(
-                                    selected = audioIndex == track.index,
-                                    onClick = { audioIndex = track.index; prepared = null },
-                                    label = {
+                        Column {
+                            audio.forEach { track ->
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clickable { audioIndex = track.index; prepared = null }
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = audioIndex == track.index,
+                                        onClick = { audioIndex = track.index; prepared = null },
+                                    )
+                                    Column {
+                                        Text(
+                                            languageName(track.lang),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
                                         Text(
                                             listOfNotNull(
-                                                track.lang?.uppercase() ?: (track.title ?: "Track ${track.index}"),
+                                                track.title,
                                                 track.codec?.uppercase(),
                                                 track.channels?.takeIf { it > 2 }?.let { "${it}ch" },
-                                            ).joinToString(" · ")
+                                                if (track.default) "default" else null,
+                                            ).joinToString(" · "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
-                                    },
-                                )
+                                    }
+                                }
                             }
                         }
                     }
                     val subs = tracks?.subs.orEmpty()
                     if (subs.isNotEmpty()) {
+                        Text("Subtitles on file", style = MaterialTheme.typography.labelLarge)
                         Text(
-                            "Subtitles on file: " + subs.joinToString(" · ") { s ->
-                                listOfNotNull(
-                                    s.lang?.uppercase() ?: s.codec?.uppercase(),
+                            subs.joinToString("\n") { s ->
+                                "• " + listOfNotNull(
+                                    languageName(s.lang),
                                     if (s.forced) "forced" else null,
-                                ).joinToString(" ")
+                                    s.codec?.uppercase(),
+                                ).joinToString(" · ")
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2593,7 +2643,7 @@ private fun RemoteScreen(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (!isLive) {
-                Button(onClick = {
+                Button(modifier = Modifier.weight(1f), onClick = {
                     scope.launch {
                         try {
                             if (isServer) {
@@ -2609,7 +2659,7 @@ private fun RemoteScreen(
                         }
                     }
                 }) { Text("-30s") }
-                Button(onClick = {
+                Button(modifier = Modifier.weight(1f), onClick = {
                     scope.launch {
                         try {
                             if (isServer) {
@@ -2627,7 +2677,7 @@ private fun RemoteScreen(
                 }) { Text("+30s") }
             }
             if (isServer) {
-                Button(onClick = {
+                Button(modifier = Modifier.weight(1f), onClick = {
                     scope.launch {
                         try {
                             val paused = status?.paused == true
@@ -2644,7 +2694,7 @@ private fun RemoteScreen(
                     )
                 }
             } else if (tvName != null) {
-                Button(onClick = {
+                Button(modifier = Modifier.weight(1f), onClick = {
                     scope.launch {
                         try {
                             val token = stream.token ?: return@launch
@@ -2662,7 +2712,7 @@ private fun RemoteScreen(
                     )
                 }
             }
-            Button(onClick = {
+            Button(modifier = Modifier.weight(1f), onClick = {
                 scope.launch {
                     try {
                         AppLog.action("stop", "token=${stream.token} live=$isLive server=$isServer")
