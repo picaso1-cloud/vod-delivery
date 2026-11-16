@@ -132,6 +132,16 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.2.1 — 2026-11-16
+
+- **One cast picker in the app.** The Cast icon now opens an in-app sheet with two
+  sections: **Google Cast** (mDNS receivers) and **Your TVs** (registered DLNA/Cast
+  rows, banned TVs excluded). Picking a TV sets it as the target; picking a Cast
+  device opens the receiver session. Cast devices that are also registered as TVs
+  are shown once, under Google Cast.
+- Cast requests now run on an app-level coroutine, so dismissing the play sheet
+  no longer cancels an in-flight `/api/app/play`.
+
 ### 0.2.0 — 2026-11-16
 
 - **Fix: casts dying after 20-30 s.** The cast ladder never broke out on success:

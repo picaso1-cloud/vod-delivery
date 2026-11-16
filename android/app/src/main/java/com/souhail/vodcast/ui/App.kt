@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -69,6 +70,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -87,10 +89,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.mediarouter.app.MediaRouteButton
+import androidx.mediarouter.media.MediaRouteSelector
+import androidx.mediarouter.media.MediaRouter
 import coil.compose.AsyncImage
-import com.google.android.gms.cast.framework.CastButtonFactory
+import com.google.android.gms.cast.CastMediaControlIntent
 import com.souhail.vodcast.cast.CastCaster
 import com.souhail.vodcast.cast.DlnaCaster
 import com.souhail.vodcast.cast.DlnaDevice
@@ -119,6 +121,7 @@ import com.souhail.vodcast.data.WatchlistResponse
 import com.souhail.vodcast.player.PlayerActivity
 import com.souhail.vodcast.util.AppLog
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -157,6 +160,7 @@ fun VodApp(settings: Settings) {
     var lastDevice by remember { mutableStateOf<DlnaDevice?>(null) }
     var lastTitle by remember { mutableStateOf("") }
     var pendingPlay by remember { mutableStateOf<PendingPlay?>(null) }
+    var showCast by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
 
     var contentType by remember { mutableStateOf("movie") }
@@ -364,9 +368,9 @@ fun VodApp(settings: Settings) {
                         IconButton(onClick = { screen = Screen.Logs }) {
                             Icon(Icons.Default.BugReport, contentDescription = "Logs")
                         }
-                        AndroidView(factory = { ctx ->
-                            MediaRouteButton(ctx).also { CastButtonFactory.setUpMediaRouteButton(ctx, it) }
-                        })
+                        IconButton(onClick = { showCast = true }) {
+                            Icon(Icons.Default.Cast, contentDescription = "Cast to a TV")
+                        }
                         if (lastStream != null && screen !is Screen.Remote) {
                             TextButton(onClick = { screen = Screen.Remote }) { Text("Remote") }
                         }
@@ -599,6 +603,7 @@ fun VodApp(settings: Settings) {
     pendingPlay?.let { play ->
         PlayDialog(
             api = api!!,
+            appScope = scope,
             pending = play,
             selectedTv = selectedTv,
             usingLan = usingLan,
@@ -616,6 +621,27 @@ fun VodApp(settings: Settings) {
             onDismiss = { pendingPlay = null },
             notify = { toast = it },
         )
+    }
+
+    if (showCast) {
+        api?.let { client ->
+            CastToDialog(
+                api = client,
+                selectedTv = selectedTv,
+                onPickTv = { tv ->
+                    selectedTv = tv
+                    settings.lastTv = tv.name
+                    toast = "TV: ${tv.name}"
+                    showCast = false
+                },
+                onPickCast = { name ->
+                    toast = "Google Cast: $name"
+                    showCast = false
+                },
+                onDismiss = { showCast = false },
+                notify = { toast = it },
+            )
+        }
     }
 }
 
@@ -1853,6 +1879,7 @@ private fun TvScreen(
 @Composable
 private fun PlayDialog(
     api: Api,
+    appScope: CoroutineScope,
     pending: PendingPlay,
     selectedTv: TvInfo?,
     usingLan: Boolean,
@@ -1861,7 +1888,6 @@ private fun PlayDialog(
     onDismiss: () -> Unit,
     notify: (String) -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var target by remember(selectedTv) {
         mutableStateOf(if (selectedTv?.kind == "cast") "cast" else "dlna")
@@ -1875,7 +1901,7 @@ private fun PlayDialog(
     var error by remember { mutableStateOf<String?>(null) }
 
     fun prepare() {
-        scope.launch {
+        appScope.launch {
             busy = true
             error = null
             AppLog.action("prepare", "media=${pending.mediaKey} target=$target live=${pending.isLive}")
@@ -1928,7 +1954,7 @@ private fun PlayDialog(
         val stream = prepared ?: return
         val picked = selectedTv
         if (target != "player" && picked != null && (picked.mac != null || picked.kind == "cast")) {
-            scope.launch {
+            appScope.launch {
                 busy = true
                 try {
                     val result = if (pending.isLive) {
@@ -1988,7 +2014,7 @@ private fun PlayDialog(
                     onPickTv()
                     return
                 }
-                scope.launch {
+                appScope.launch {
                     busy = true
                     try {
                         val caster = DlnaCaster(context)
@@ -2113,6 +2139,169 @@ private fun PlayDialog(
             ) { Text(if (prepared == null) "Prepare" else "Start") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun CastToDialog(
+    api: Api,
+    selectedTv: TvInfo?,
+    onPickTv: (TvInfo) -> Unit,
+    onPickCast: (String) -> Unit,
+    onDismiss: () -> Unit,
+    notify: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val mediaRouter = remember { MediaRouter.getInstance(context) }
+    val selector = remember {
+        MediaRouteSelector.Builder()
+            .addControlCategory(
+                CastMediaControlIntent.categoryForCast(
+                    CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID,
+                )
+            )
+            .build()
+    }
+    var tvs by remember { mutableStateOf<List<TvInfo>>(emptyList()) }
+    var routes by remember { mutableStateOf<List<MediaRouter.RouteInfo>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+
+    fun refreshRoutes() {
+        routes = mediaRouter.routes.filter { it.matchesSelector(selector) }
+    }
+
+    DisposableEffect(Unit) {
+        val callback = object : MediaRouter.Callback() {
+            override fun onRouteAdded(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshRoutes()
+            override fun onRouteRemoved(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshRoutes()
+            override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshRoutes()
+            override fun onRouteSelected(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshRoutes()
+        }
+        mediaRouter.addCallback(selector, callback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+        refreshRoutes()
+        onDispose { mediaRouter.removeCallback(callback) }
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            tvs = api.tvs()
+        } catch (e: Exception) {
+            notify(e.message ?: "Could not load TVs")
+        } finally {
+            loading = false
+        }
+    }
+
+    val activeRoute = mediaRouter.selectedRoute?.takeIf { it.matchesSelector(selector) }?.name?.toString()
+    val routeNames = routes.map { (it.name?.toString() ?: it.id).trim() }.toSet()
+    val visibleTvs = tvs.filter { it.name.trim() !in routeNames }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cast to") },
+        text = {
+            Column(
+                Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    "Google Cast (${routes.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+                )
+                if (routes.isEmpty()) {
+                    Text(
+                        "None found. Make sure the Cast device is on and on the same network.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                routes.forEach { route ->
+                    val name = route.name?.toString() ?: route.id
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Default.Cast,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                            )
+                        },
+                        headlineContent = { Text(name) },
+                        supportingContent = { Text("Google Cast receiver") },
+                        trailingContent = {
+                            if (activeRoute == name) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "Connected",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        },
+                        modifier = Modifier.clickable {
+                            scope.launch {
+                                runCatching { mediaRouter.selectRoute(route) }
+                                    .onSuccess { onPickCast(name) }
+                                    .onFailure { notify(it.message ?: "Could not select ${name}") }
+                            }
+                        },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Your TVs (${visibleTvs.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+                if (loading) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading TVs…", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else if (visibleTvs.isEmpty()) {
+                    Text(
+                        "No TVs registered — add them in the TVs tab.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                visibleTvs.forEach { tv ->
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                if (tv.kind == "cast") Icons.Default.Cast else Icons.Default.Tv,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        },
+                        headlineContent = { Text(tv.name, fontWeight = FontWeight.SemiBold) },
+                        supportingContent = {
+                            Text(
+                                listOfNotNull(
+                                    tv.ip,
+                                    if (tv.kind == "cast") "Google Cast" else "DLNA",
+                                    if (tv.downgrade == 1) "1080p" else null,
+                                ).joinToString(" · ")
+                            )
+                        },
+                        trailingContent = {
+                            if (selectedTv?.name == tv.name) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "Selected",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        },
+                        modifier = Modifier.clickable { onPickTv(tv) },
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 

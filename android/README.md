@@ -11,6 +11,11 @@ dark cinematic theme with bottom navigation.
 
 ## Casting (v0.2.0)
 
+- The **Cast** button opens an in-app **Cast to** sheet with two sections:
+  **Google Cast** (mDNS receivers, e.g. the TV box) and **Your TVs** (registered
+  DLNA/Cast rows from the server, banned TVs excluded). Picking a TV sets it as
+  the target; picking a Cast device connects the receiver. A registered TV that
+  is also a Cast receiver is listed once, under Google Cast.
 - Registered TVs (any row with a MAC, or `kind=cast`) are cast **server-side**
   through `POST /api/app/play` / `live/play`. The server owns the cast ladder,
   the wedge breaker, byte-truth verification and the TV's `downgrade` flag.
