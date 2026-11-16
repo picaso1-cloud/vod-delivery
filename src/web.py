@@ -715,11 +715,19 @@ async def app_tv_probe(name: str = ""):
 @app.post("/api/app/stream", dependencies=[Depends(_app_auth)])
 async def app_stream(media_key: str = "", start_position: float = 0.0, mode: str = "cache",
                      quality: str = "copy", prepare: int = 0, format: str = "",
-                     declare_current: int = 1, tv: str = ""):
+                     declare_current: int = 1, tv: str = "", audio: int = -1, sub: int = -1):
     if not media_key:
         raise HTTPException(status_code=422, detail="media_key required")
     return call_bridge("app_stream", media_key, float(start_position), mode, quality,
-                       int(prepare), format, int(declare_current), tv, timeout=300.0)
+                       int(prepare), format, int(declare_current), tv, int(audio), int(sub),
+                       timeout=300.0)
+
+
+@app.get("/api/app/tracks", dependencies=[Depends(_app_auth)])
+async def app_tracks(media_key: str = "", force: int = 0):
+    if not media_key:
+        raise HTTPException(status_code=422, detail="media_key required")
+    return call_bridge("tracks", media_key, int(force), timeout=120.0)
 
 
 @app.get("/api/app/session", dependencies=[Depends(_app_auth)])
@@ -785,10 +793,11 @@ async def app_live_stream(channel_id: int = 0):
 
 
 @app.post("/api/app/play", dependencies=[Depends(_app_auth)])
-async def app_play(media_key: str = "", tv: str = "", start_position: float = 0.0):
+async def app_play(media_key: str = "", tv: str = "", start_position: float = 0.0,
+                   audio: int = -1, sub: int = -1):
     if not media_key:
         raise HTTPException(status_code=422, detail="media_key required")
-    return call_bridge("play", media_key, tv, float(start_position), timeout=900.0)
+    return call_bridge("play", media_key, tv, float(start_position), int(audio), int(sub), timeout=900.0)
 
 
 @app.post("/api/app/live/play", dependencies=[Depends(_app_auth)])

@@ -156,6 +156,20 @@ credential.
 | POST | `/api/app/tvs/ban` | `mac`, `label` | `{ok, mac}` — MAC ban list, hidden from every TV surface |
 | POST | `/api/app/tvs/unban` | `mac` | `{ok, mac}` |
 
+## Tracks (audio / subtitles)
+
+| Method | Path | Params | Returns |
+|---|---|---|---|
+| GET | `/api/app/tracks` | `media_key`, `force=0\|1` | `{ok, audio:[{index,codec,lang,title,channels,default}], subs:[{index,codec,lang,title,forced,default}], probed_at}` |
+
+The probe runs on first use and is cached in `media_tracks`; it is deferred (returns `deferred:true`) while a provider session is active because the account allows one connection. `force=1` re-probes.
+
+Pass the chosen tracks to playback:
+
+- `POST /api/app/stream?...&audio=<index>&sub=<index>` — `audio` switches copy-quality casts to a remux (`cache_remux`, MKV) that drops the unused tracks.
+- `POST /api/app/play?...&audio=<index>&sub=<index>` — server-side cast uses the same mapping through the normal ladder.
+- `-1` (default) keeps the file's default streams.
+
 ## Library, queue, watchlist, history
 
 | Method | Path | Params | Returns |

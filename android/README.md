@@ -11,6 +11,11 @@ dark cinematic theme with bottom navigation.
 
 ## Casting (v0.2.2)
 
+- **Audio tracks**: the play sheet lists the file's real audio tracks (probed by
+  ffprobe on first use). Picking one casts that language — copy-quality casts
+  are remuxed (MKV, no re-encode) so the other tracks are dropped.
+- **Subtitles on file** are shown with their languages (forced tracks marked);
+  selecting/burning them is the next phase.
 - **Recovery:** the app restores the playing stream on launch (`GET /api/app/sessions`
   + persisted settings), so a crash, force-stop, network loss or just closing the app
   doesn't lose the Remote. A **Now playing** banner on Discover and the top-bar

@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS banned_tvs (
     label TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS media_tracks (
+    media_key TEXT PRIMARY KEY,
+    audio TEXT,
+    subs TEXT,
+    probed_at TEXT
+);
 CREATE TABLE IF NOT EXISTS plays (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -365,6 +371,19 @@ def is_banned_mac(conn: sqlite3.Connection, mac: str | None) -> bool:
 
 def list_banned(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM banned_tvs ORDER BY created_at DESC").fetchall()
+
+
+def set_media_tracks(conn: sqlite3.Connection, media_key: str, audio: list, subs: list) -> None:
+    conn.execute(
+        "INSERT INTO media_tracks(media_key, audio, subs, probed_at) VALUES(?,?,?,?) "
+        "ON CONFLICT(media_key) DO UPDATE SET audio=excluded.audio, subs=excluded.subs, probed_at=excluded.probed_at",
+        (media_key, json.dumps(audio), json.dumps(subs), _now()),
+    )
+    conn.commit()
+
+
+def get_media_tracks(conn: sqlite3.Connection, media_key: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM media_tracks WHERE media_key=?", (media_key,)).fetchone()
 
 
 def rename_tv(conn: sqlite3.Connection, udn: str, name: str) -> None:

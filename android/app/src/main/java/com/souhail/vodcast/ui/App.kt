@@ -116,6 +116,7 @@ import com.souhail.vodcast.data.Settings
 import com.souhail.vodcast.data.SessionsResponse
 import com.souhail.vodcast.data.StatusInfo
 import com.souhail.vodcast.data.StreamInfo
+import com.souhail.vodcast.data.TracksResponse
 import com.souhail.vodcast.data.TvInfo
 import com.souhail.vodcast.data.WatchlistItem
 import com.souhail.vodcast.data.WatchlistResponse
@@ -2027,6 +2028,19 @@ private fun PlayDialog(
     var prepared by remember { mutableStateOf<StreamInfo?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var tracks by remember { mutableStateOf<TracksResponse?>(null) }
+    var audioIndex by remember { mutableStateOf(-1) }
+
+    LaunchedEffect(pending.mediaKey) {
+        runCatching { api.tracks(pending.mediaKey) }.onSuccess { resp ->
+            tracks = resp
+            if (audioIndex < 0) {
+                val def = resp.audio.firstOrNull { it.default } ?: resp.audio.firstOrNull()
+                audioIndex = def?.index ?: -1
+            }
+            AppLog.i("TRACKS", "${pending.mediaKey}: ${resp.audio.size} audio, ${resp.subs.size} subs")
+        }.onFailure { AppLog.w("TRACKS", "probe failed: ${it.message}") }
+    }
 
     fun prepare() {
         appScope.launch {
@@ -2055,6 +2069,7 @@ private fun PlayDialog(
                         prepare = true,
                         format = if (target == "cast") "mp4" else null,
                         startPosition = pending.startPosition,
+                        audio = audioIndex,
                     )
                 }
                 if (!info.ok) {
@@ -2088,7 +2103,7 @@ private fun PlayDialog(
                     val result = if (pending.isLive) {
                         api.livePlay(pending.mediaKey.removePrefix("live:").toInt(), picked.name)
                     } else {
-                        api.play(pending.mediaKey, picked.name, pending.startPosition)
+                        api.play(pending.mediaKey, picked.name, pending.startPosition, audioIndex)
                     }
                     AppLog.action(
                         "server_cast",
@@ -2231,6 +2246,42 @@ private fun PlayDialog(
                             onCheckedChange = { quality = "downgrade"; prepared = null },
                         )
                         Text("1080p transcode")
+                    }
+                }
+                if (!pending.isLive) {
+                    val audio = tracks?.audio.orEmpty()
+                    if (audio.size > 1) {
+                        Text("Audio", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(audio) { track ->
+                                FilterChip(
+                                    selected = audioIndex == track.index,
+                                    onClick = { audioIndex = track.index; prepared = null },
+                                    label = {
+                                        Text(
+                                            listOfNotNull(
+                                                track.lang?.uppercase() ?: (track.title ?: "Track ${track.index}"),
+                                                track.codec?.uppercase(),
+                                                track.channels?.takeIf { it > 2 }?.let { "${it}ch" },
+                                            ).joinToString(" · ")
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    val subs = tracks?.subs.orEmpty()
+                    if (subs.isNotEmpty()) {
+                        Text(
+                            "Subtitles on file: " + subs.joinToString(" · ") { s ->
+                                listOfNotNull(
+                                    s.lang?.uppercase() ?: s.codec?.uppercase(),
+                                    if (s.forced) "forced" else null,
+                                ).joinToString(" ")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
                 if (prepared == null) {

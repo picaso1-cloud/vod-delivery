@@ -132,6 +132,23 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.0 — 2026-11-16
+
+- **Track discovery**: the server now ffprobes a stream on first use and stores
+  its real tracks (`media_tracks`), because the provider catalog only labels one
+  language per row. MULTI rows can carry 5-6 audio languages and up to 10
+  subtitle tracks.
+- **Audio selection**: the play sheet lists the file's audio tracks (language,
+  codec, channels) and the cast uses the chosen one (`-map 0:v:0 -map 0:<idx>`).
+  Copy-quality casts switch to a remux (`cache_remux`, MKV) so the extra tracks
+  are dropped without re-encoding; transcode/TS paths map the same track.
+  Telegram: `/audio` lists tracks and `/audio <n>` re-casts at the current
+  position.
+- **Subtitle visibility**: the play sheet shows which subtitles are embedded
+  (language + forced). Picking/burning them is the next phase.
+- API: `GET /api/app/tracks?media_key=`, `audio`/`sub` params on
+  `POST /api/app/stream` and `/api/app/play`.
+
 ### 0.2.2 — 2026-11-16
 
 - **Cast state survives app restarts.** New `GET /api/app/sessions` lists the

@@ -68,6 +68,8 @@ class ProxySession:
     deferred: bool = False
     deferred_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tv_name: str | None = None
+    audio_index: int | None = None
+    sub_index: int | None = None
 
 
 _sessions: dict[str, ProxySession] = {}
@@ -185,8 +187,12 @@ async def start_session(
     provider_url: str, title: str, mode: str = "copy", mime: str = "video/mpeg",
     start_offset: float = 0.0, dest_rel: Path | None = None, live: bool = False,
     declare_current: bool = False, deferred: bool = False,
+    audio_index: int | None = None, sub_index: int | None = None,
 ) -> ProxySession:
     await _kill_orphan_ffmpeg()
+    if audio_index is not None and mode == "cache":
+        mode = "cache_remux"
+        mime = "video/x-matroska"
     async with _lock:
         for old in _sessions.values():
             await _kill(old)
@@ -195,7 +201,7 @@ async def start_session(
         session = ProxySession(
             token=uuid.uuid4().hex[:12], provider_url=provider_url, title=title,
             mode=mode, mime=mime, start_offset=start_offset, dest_rel=dest_rel, is_live=live,
-            declare_current=declare_current,
+            declare_current=declare_current, audio_index=audio_index, sub_index=sub_index,
         )
         if mode == "hls":
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -216,7 +222,7 @@ async def start_session(
         if not (deferred and declare_current and start_offset <= 0):
             session.total = await _probe_total(provider_url)
         session.seek_marks.append((0, start_offset))
-        if mode in ("cache_downgrade", "cache_mp4") and not deferred:
+        if mode in ("cache_downgrade", "cache_mp4", "cache_remux") and not deferred:
             session.duration_s = await _probe_duration(provider_url)
             if session.duration_s > 0:
                 session.total = int(session.duration_s * 550_000)
@@ -371,6 +377,7 @@ async def _spawn_virtual_decoder(session: ProxySession, content_time: float, tra
         *(["-user_agent", PROVIDER_USER_AGENT] if http_src else []),
         "-i", session.provider_url,
         *_decoder_codec_args(session, transcode),
+        *_map_args(session, "mpegts"),
         "-copytb", "1", "-output_ts_offset", f"{offset:.3f}",
         "-f", "mpegts", "pipe:1",
     ]
@@ -526,7 +533,7 @@ async def start_library_session(path: Path, title: str, mime: str) -> ProxySessi
     return session
 
 
-async def start_virtual_session(provider_url: str, title: str, transcode: bool, start_offset: float = 0.0, loop: bool = False, idle_timeout: float = 180.0, declare_current: bool = False) -> ProxySession:
+async def start_virtual_session(provider_url: str, title: str, transcode: bool, start_offset: float = 0.0, loop: bool = False, idle_timeout: float = 180.0, declare_current: bool = False, audio_index: int | None = None) -> ProxySession:
     async with _lock:
         for old_session in list(_sessions.values()):
             if not old_session.done:
@@ -538,6 +545,7 @@ async def start_virtual_session(provider_url: str, title: str, transcode: bool, 
     session = ProxySession(
         token=token, provider_url=provider_url, title=title, mode="virtual",
         mime="video/mpeg", path=path, start_offset=start_offset,
+        audio_index=audio_index,
     )
     _sessions[token] = session
     session.virtual_transcode = transcode
@@ -602,8 +610,22 @@ async def _probe_tail_time(session: ProxySession) -> float | None:
         return None
 
 
+def _map_args(session: ProxySession, container: str) -> list:
+    if session.audio_index is None and session.sub_index is None:
+        return []
+    args = ["-map", "0:v:0"]
+    if session.audio_index is not None:
+        args += ["-map", f"0:{session.audio_index}"]
+    else:
+        args += ["-map", "0:a:0?"]
+    if session.sub_index is not None and container == "matroska":
+        args += ["-map", f"0:{session.sub_index}", "-c:s", "copy"]
+    return args
+
+
 async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation: int,
-                           container: str = "mpegts", extra: list | None = None) -> None:
+                           container: str = "mpegts", extra: list | None = None,
+                           map_args: list | None = None) -> None:
     total = session.total or 0
     avg_bps = (total / session.duration_s) if session.duration_s else 0.0
     session.stderr_log = (session.path.parent / f"ffmpeg-{session.token}.log").open("wb") if session.path else None
@@ -647,7 +669,7 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
             "-progress", f"pipe:{pw}",
             "-ss", f"{target_s:.3f}", "-user_agent", PROVIDER_USER_AGENT,
             "-i", session.provider_url,
-            *codec_args, *(extra or []), "-f", container, "pipe:1",
+            *codec_args, *(map_args or []), *(extra or []), "-f", container, "pipe:1",
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -833,13 +855,24 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
         return
     if session.mode == "cache_downgrade":
         session.feed_generation += 1
-        asyncio.create_task(_cache_feed_task(session, transcode=True, my_generation=session.feed_generation))
+        asyncio.create_task(_cache_feed_task(
+            session, transcode=True, my_generation=session.feed_generation,
+            map_args=_map_args(session, "mpegts"),
+        ))
+        return
+    if session.mode == "cache_remux":
+        session.feed_generation += 1
+        asyncio.create_task(_cache_feed_task(
+            session, transcode=False, my_generation=session.feed_generation,
+            container="matroska", map_args=_map_args(session, "matroska"),
+        ))
         return
     if session.mode == "cache_mp4":
         session.feed_generation += 1
         asyncio.create_task(_cache_feed_task(
             session, transcode=False, my_generation=session.feed_generation,
             container="mp4", extra=["-movflags", "+frag_keyframe+empty_moov+default_base_moof"],
+            map_args=_map_args(session, "mp4"),
         ))
         return
     transcode = session.mode in ("downgrade", "cache_downgrade")
@@ -871,6 +904,7 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
             "-user_agent", PROVIDER_USER_AGENT,
             "-i", session.provider_url,
             *vcodec, *acodec,
+            *_map_args(session, "hls"),
             "-f", "hls",
             "-hls_time", "6",
             "-hls_list_size", "0",
@@ -890,6 +924,7 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
             "-user_agent", PROVIDER_USER_AGENT,
             "-i", session.provider_url,
             *vcodec, *acodec,
+            *_map_args(session, container),
             "-f", container, str(session.path),
         ]
         stdout = asyncio.subprocess.DEVNULL

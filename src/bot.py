@@ -804,6 +804,7 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                     payload["url"], payload["title"],
                     transcode=True,
                     start_offset=session.get("resume_pos") or 0.0,
+                    audio_index=session.get("audio_index"),
                 )
             except Exception as exc:
                 logger.warning("attempt %s/%s failed: %s", mode, quality, exc)
@@ -819,6 +820,8 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                     mode=f"cache_{quality}" if quality == "downgrade" else "cache",
                     mime="video/mpeg",
                     start_offset=session.get("resume_pos") or 0.0,
+                    audio_index=session.get("audio_index"),
+                    sub_index=session.get("sub_index"),
                 )
             except Exception as exc:
                 logger.warning("attempt %s/%s failed: %s", mode, quality, exc)
@@ -843,6 +846,8 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
             session_obj = await proxy.start_session(
                 payload["url"], payload["title"], mode=quality,
                 start_offset=session.get("resume_pos") or 0.0,
+                audio_index=session.get("audio_index"),
+                sub_index=session.get("sub_index"),
             )
             proxy_token = session_obj.token
             url = proxy.proxied_url(session_obj.token, tv_ip)
@@ -1401,6 +1406,75 @@ async def main() -> None:
         finally:
             conn.close()
         await message.answer(f"✅ Unbanned <code>{mac}</code>.")
+
+    @dp.message(Command("audio"))
+    async def cmd_audio(message: Message) -> None:
+        if active_play is None or not getattr(active_play, "media_key", None):
+            await message.answer("Nothing is playing.")
+            return
+        media_key = active_play.media_key
+        from . import trackprobe
+
+        data = trackprobe.get_cached(media_key)
+        if not data:
+            await message.answer(
+                "No track data cached for this title yet.\n"
+                "Open it once in the app (Play sheet) so the server probes it, then try again."
+            )
+            return
+        audio = data.get("audio") or []
+        if not audio:
+            await message.answer("This file reports a single audio stream.")
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if not arg:
+            lines = "\n".join(
+                f"{i + 1}. {a.get('lang') or '?'} · {a.get('codec') or ''} · {a.get('channels') or '?'}ch"
+                + (" (default)" if a.get("default") else "")
+                for i, a in enumerate(audio)
+            )
+            await message.answer(
+                "🎧 <b>Audio tracks</b>\n" + lines +
+                "\n\nSwitch with <code>/audio &lt;n&gt;</code> — re-casts at the current position."
+            )
+            return
+        try:
+            track = audio[int(arg) - 1]
+        except (ValueError, IndexError):
+            await message.answer("Pick a number from /audio.")
+            return
+        payload = await _resolve_media_key(media_key)
+        if not payload:
+            await message.answer("Could not resolve this title.")
+            return
+        pos = 0.0
+        token = getattr(active_play, "proxy_token", None)
+        if token:
+            s = proxy.get_session(token)
+            merged = proxy.progress_seconds(s) if s else None
+            pos = merged[0] if merged else 0.0
+        else:
+            pd = await _active_position()
+            pos = pd[0] if pd else 0.0
+        renderer = active_play.renderer
+        session = _session(message.chat.id)
+        session["pending"] = payload
+        session["resume_pos"] = pos
+        session["audio_index"] = int(track["index"])
+        session["sub_index"] = None
+        session["renderers"] = [renderer]
+        session["selected"] = 0
+        wait = await message.answer(
+            f"🔁 Switching to <b>{track.get('lang') or track.get('index')}</b> at {_fmt_time(pos)}…"
+        )
+        try:
+            result = await _execute_cast(session, message.chat.id, 0)
+        except Exception as exc:
+            logger.exception("audio switch failed")
+            result = f"❌ {type(exc).__name__}: {str(exc)[:160]}"
+        session["pending"] = None
+        await wait.edit_text(result)
 
     @dp.message(Command("stop"))
     async def cmd_stop(message: Message) -> None:
@@ -2796,6 +2870,7 @@ async def main() -> None:
             BotCommand(command="tvs", description="Find and pick a TV"),
             BotCommand(command="bantv", description="Ban a TV by MAC (hide it everywhere)"),
             BotCommand(command="unbantv", description="Unban a TV by MAC"),
+            BotCommand(command="audio", description="List or switch audio tracks"),
             BotCommand(command="continue", description="Continue watching"),
             BotCommand(command="watchlist", description="Saved titles"),
             BotCommand(command="stop", description="Stop playback"),
@@ -3291,7 +3366,8 @@ async def main() -> None:
             pass
         return Renderer(location=r.location, friendly_name=name, udn=r.udn)
 
-    async def api_play(media_key: str, tv_name: str, start_position: float) -> dict:
+    async def api_play(media_key: str, tv_name: str, start_position: float,
+                       audio: int = -1, sub: int = -1) -> dict:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
@@ -3301,6 +3377,8 @@ async def main() -> None:
         session = _session(0)
         session["pending"] = payload
         session["resume_pos"] = float(start_position) if start_position else None
+        session["audio_index"] = int(audio) if int(audio) >= 0 else None
+        session["sub_index"] = int(sub) if int(sub) >= 0 else None
         session["renderers"] = [renderer]
         session["selected"] = 0
         try:
@@ -3532,10 +3610,13 @@ async def main() -> None:
 
     async def api_app_stream(media_key: str, start_position: float = 0.0, mode: str = "cache",
                              quality: str = "copy", prepare: int = 0, format: str = "",
-                             declare_current: int = 1, tv: str = "") -> dict:
+                             declare_current: int = 1, tv: str = "",
+                             audio: int = -1, sub: int = -1) -> dict:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
+        audio_index = int(audio) if int(audio) >= 0 else None
+        sub_index = int(sub) if int(sub) >= 0 else None
         fmt = (format or "").lower()
         if fmt == "mp4":
             actual_mode, mime, served_ext = "cache_mp4", "video/mp4", "mp4"
@@ -3548,6 +3629,10 @@ async def main() -> None:
             mime = "video/x-matroska" if payload["ext"] in ("mkv", "mp4") else "video/mpeg"
             served_ext = "mkv" if mime == "video/x-matroska" else "ts"
         deferred = bool(prepare) and actual_mode.startswith("cache")
+        if audio_index is not None and actual_mode == "cache":
+            actual_mode = "cache_remux"
+            mime = "video/x-matroska"
+            served_ext = "mkv"
         try:
             if actual_mode == "virtual":
                 s = await proxy.start_virtual_session(
@@ -3555,6 +3640,7 @@ async def main() -> None:
                     transcode=(quality == "downgrade"),
                     start_offset=float(start_position or 0.0),
                     declare_current=True,
+                    audio_index=audio_index,
                 )
             else:
                 s = await proxy.start_session(
@@ -3564,9 +3650,17 @@ async def main() -> None:
                     start_offset=float(start_position or 0.0),
                     declare_current=bool(declare_current),
                     deferred=deferred,
+                    audio_index=audio_index,
+                    sub_index=sub_index,
                 )
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
+        if s.mime == "video/mp4":
+            served_ext = "mp4"
+        elif s.mime == "video/x-matroska":
+            served_ext = "mkv"
+        elif s.mime == "video/mpeg":
+            served_ext = "ts"
         if tv:
             s.tv_name = tv
         from . import urlsign
@@ -3587,6 +3681,15 @@ async def main() -> None:
             "live": bool(s.is_live),
             "start_offset": float(start_position or 0.0), **urls,
         }
+
+    async def api_tracks(media_key: str, force: int = 0) -> dict:
+        payload = await _resolve_media_key(media_key)
+        if not payload:
+            return {"ok": False, "error": f"media_key {media_key} not found", "audio": [], "subs": []}
+        from . import trackprobe
+
+        data = await trackprobe.probe_and_cache(media_key, payload["url"], force=bool(force))
+        return {"ok": True, "media_key": media_key, "title": payload["title"], **data}
 
     async def api_app_session(token: str) -> dict:
         s = proxy.get_session(token)
@@ -3795,6 +3898,7 @@ async def main() -> None:
              tvs=api_tvs, play=api_play, live_play=api_live_play, control=api_control, status=api_status,
              test_virtual=api_test_virtual,
              app_stream=api_app_stream, app_session=api_app_session, app_sessions=api_app_sessions,
+             tracks=api_tracks,
              app_control=api_app_control,
              app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
              banned_tvs=api_banned_tvs, ban_tv=api_ban_tv, unban_tv=api_unban_tv,

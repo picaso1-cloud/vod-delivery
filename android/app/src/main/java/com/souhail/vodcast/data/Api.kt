@@ -98,6 +98,8 @@ class Api(private val baseUrl: String, private val token: String) {
         startPosition: Double = 0.0,
         declareCurrent: Boolean = true,
         tv: String? = null,
+        audio: Int = -1,
+        sub: Int = -1,
     ): StreamInfo {
         val params = mutableMapOf(
             "media_key" to mediaKey,
@@ -109,10 +111,17 @@ class Api(private val baseUrl: String, private val token: String) {
         if (!format.isNullOrBlank()) params["format"] = format
         params["declare_current"] = if (declareCurrent) "1" else "0"
         if (!tv.isNullOrBlank()) params["tv"] = tv
+        if (audio >= 0) params["audio"] = audio.toString()
+        if (sub >= 0) params["sub"] = sub.toString()
         return json.decodeFromString(exec("api/app/stream", params, post = true))
     }
 
     suspend fun sessions(): SessionsResponse = json.decodeFromString(exec("api/app/sessions"))
+
+    suspend fun tracks(mediaKey: String, force: Boolean = false): TracksResponse =
+        json.decodeFromString(
+            exec("api/app/tracks", mapOf("media_key" to mediaKey, "force" to if (force) "1" else "0"))
+        )
 
     suspend fun session(token: String): SessionInfo =
         json.decodeFromString(exec("api/app/session", mapOf("token" to token)))
@@ -130,11 +139,23 @@ class Api(private val baseUrl: String, private val token: String) {
             exec("api/app/live/stream", mapOf("channel_id" to channelId.toString()), post = true)
         )
 
-    suspend fun play(mediaKey: String, tv: String, startPosition: Double = 0.0): ControlResult =
+    suspend fun play(
+        mediaKey: String,
+        tv: String,
+        startPosition: Double = 0.0,
+        audio: Int = -1,
+        sub: Int = -1,
+    ): ControlResult =
         json.decodeFromString(
             exec(
                 "api/app/play",
-                mapOf("media_key" to mediaKey, "tv" to tv, "start_position" to startPosition.toString()),
+                mapOf(
+                    "media_key" to mediaKey,
+                    "tv" to tv,
+                    "start_position" to startPosition.toString(),
+                    "audio" to audio.toString(),
+                    "sub" to sub.toString(),
+                ),
                 post = true,
             )
         )

@@ -173,6 +173,39 @@ data class SessionsResponse(
 )
 
 @Serializable
+data class AudioTrack(
+    val index: Int = -1,
+    val codec: String? = null,
+    val lang: String? = null,
+    val title: String? = null,
+    val channels: Int? = null,
+    val default: Boolean = false,
+)
+
+@Serializable
+data class SubTrack(
+    val index: Int = -1,
+    val codec: String? = null,
+    val lang: String? = null,
+    val title: String? = null,
+    val forced: Boolean = false,
+    val default: Boolean = false,
+)
+
+@Serializable
+data class TracksResponse(
+    val ok: Boolean = false,
+    val media_key: String = "",
+    val title: String = "",
+    val audio: List<AudioTrack> = emptyList(),
+    val subs: List<SubTrack> = emptyList(),
+    val probed_at: String? = null,
+    val empty: Boolean = false,
+    val deferred: Boolean = false,
+    val error: String? = null,
+)
+
+@Serializable
 data class LiveCategory(
     val id: Int = 0,
     val name: String = "",
