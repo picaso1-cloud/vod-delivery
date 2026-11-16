@@ -97,6 +97,7 @@ class Api(private val baseUrl: String, private val token: String) {
         format: String? = null,
         startPosition: Double = 0.0,
         declareCurrent: Boolean = true,
+        tv: String? = null,
     ): StreamInfo {
         val params = mutableMapOf(
             "media_key" to mediaKey,
@@ -107,8 +108,11 @@ class Api(private val baseUrl: String, private val token: String) {
         if (prepare) params["prepare"] = "1"
         if (!format.isNullOrBlank()) params["format"] = format
         params["declare_current"] = if (declareCurrent) "1" else "0"
+        if (!tv.isNullOrBlank()) params["tv"] = tv
         return json.decodeFromString(exec("api/app/stream", params, post = true))
     }
+
+    suspend fun sessions(): SessionsResponse = json.decodeFromString(exec("api/app/sessions"))
 
     suspend fun session(token: String): SessionInfo =
         json.decodeFromString(exec("api/app/session", mapOf("token" to token)))

@@ -67,6 +67,7 @@ class ProxySession:
     live_file: Path | None = None
     deferred: bool = False
     deferred_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    tv_name: str | None = None
 
 
 _sessions: dict[str, ProxySession] = {}
@@ -83,6 +84,11 @@ def active_session() -> ProxySession | None:
 
 def get_session(token: str) -> ProxySession | None:
     return _sessions.get(token)
+
+
+def list_sessions() -> list[ProxySession]:
+    live = [s for s in _sessions.values() if not s.done]
+    return sorted(live, key=lambda s: s.started_at, reverse=True)
 
 
 def progress_seconds(session: ProxySession) -> tuple[float, float] | None:

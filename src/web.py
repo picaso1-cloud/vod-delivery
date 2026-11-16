@@ -678,11 +678,11 @@ async def app_tv_probe(name: str = ""):
 @app.post("/api/app/stream", dependencies=[Depends(_app_auth)])
 async def app_stream(media_key: str = "", start_position: float = 0.0, mode: str = "cache",
                      quality: str = "copy", prepare: int = 0, format: str = "",
-                     declare_current: int = 1):
+                     declare_current: int = 1, tv: str = ""):
     if not media_key:
         raise HTTPException(status_code=422, detail="media_key required")
     return call_bridge("app_stream", media_key, float(start_position), mode, quality,
-                       int(prepare), format, int(declare_current), timeout=300.0)
+                       int(prepare), format, int(declare_current), tv, timeout=300.0)
 
 
 @app.get("/api/app/session", dependencies=[Depends(_app_auth)])
@@ -690,6 +690,11 @@ async def app_session(token: str = ""):
     if not token:
         raise HTTPException(status_code=422, detail="token required")
     return call_bridge("app_session", token)
+
+
+@app.get("/api/app/sessions", dependencies=[Depends(_app_auth)])
+async def app_sessions():
+    return call_bridge("app_sessions")
 
 
 @app.post("/api/app/control", dependencies=[Depends(_app_auth)])

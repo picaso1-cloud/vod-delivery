@@ -110,6 +110,7 @@ data class StreamInfo(
     val public_url: String? = null,
     val expires_in: Int = 0,
     val start_offset: Double = 0.0,
+    val live: Boolean = false,
     val error: String? = null,
 )
 
@@ -140,6 +141,35 @@ data class ControlResult(
     val ok: Boolean = false,
     val detail: String? = null,
     val error: String? = null,
+)
+
+@Serializable
+data class ActiveSession(
+    val token: String = "",
+    val title: String = "",
+    val mode: String = "",
+    val mime: String? = null,
+    val position: Double? = null,
+    val duration: Double = 0.0,
+    val max_served: Long = 0,
+    val clients: Int = 0,
+    val live: Boolean = false,
+    val tv: String? = null,
+    val started_at: Double = 0.0,
+)
+
+@Serializable
+data class ActivePlayInfo(
+    val tv: String? = null,
+    val paused: Boolean = false,
+    val token: String? = null,
+)
+
+@Serializable
+data class SessionsResponse(
+    val ok: Boolean = false,
+    val sessions: List<ActiveSession> = emptyList(),
+    val active_play: ActivePlayInfo? = null,
 )
 
 @Serializable

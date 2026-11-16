@@ -29,5 +29,30 @@ class Settings(context: Context) {
         get() = prefs.getString("last_tv", "") ?: ""
         set(value) = prefs.edit().putString("last_tv", value).apply()
 
+    var sessionToken: String
+        get() = prefs.getString("session_token", "") ?: ""
+        set(value) = prefs.edit().putString("session_token", value).apply()
+
+    var sessionTitle: String
+        get() = prefs.getString("session_title", "") ?: ""
+        set(value) = prefs.edit().putString("session_title", value).apply()
+
+    var sessionMode: String
+        get() = prefs.getString("session_mode", "") ?: ""
+        set(value) = prefs.edit().putString("session_mode", value).apply()
+
+    var sessionTv: String
+        get() = prefs.getString("session_tv", "") ?: ""
+        set(value) = prefs.edit().putString("session_tv", value).apply()
+
+    fun clearSession() {
+        prefs.edit()
+            .remove("session_token")
+            .remove("session_title")
+            .remove("session_mode")
+            .remove("session_tv")
+            .apply()
+    }
+
     val configured: Boolean get() = baseUrl.isNotBlank() && token.isNotBlank()
 }

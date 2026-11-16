@@ -132,6 +132,23 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.2.2 — 2026-11-16
+
+- **Cast state survives app restarts.** New `GET /api/app/sessions` lists the
+  active proxy sessions; the app restores the playing stream (server cast or
+  app session) on launch, so a crash, a force-stop, losing the network or just
+  closing the app no longer loses control.
+- **"Now playing" banner** on Discover (title + **Control**) plus the top-bar
+  **Remote** button, both driven by the restored session. The app also polls
+  every 30 s while nothing is playing, so a cast started elsewhere (e.g.
+  Telegram) appears without restarting the app.
+- The last selected TV is restored on launch (`settings.lastTv`), so the play
+  sheet works immediately.
+- `/api/app/stream` accepts `tv=` and stores it on the session;
+  `/api/app/control` supports `pause|resume` for sessions that have a TV
+  attached (server-side DLNA/Cast pause). Live sessions hide the seek buttons.
+- `/api/app/stream` and `live/stream` now report `live`.
+
 ### 0.2.1 — 2026-11-16
 
 - **One cast picker in the app.** The Cast icon now opens an in-app sheet with two

@@ -9,8 +9,15 @@ Discover (AI picks + by-name + by-meaning), Live TV, library playback, TV list,
 stream preparation, server-side casting and on-device playback. The UI uses a
 dark cinematic theme with bottom navigation.
 
-## Casting (v0.2.0)
+## Casting (v0.2.2)
 
+- **Recovery:** the app restores the playing stream on launch (`GET /api/app/sessions`
+  + persisted settings), so a crash, force-stop, network loss or just closing the app
+  doesn't lose the Remote. A **Now playing** banner on Discover and the top-bar
+  **Remote** button open the controls. Nothing playing? The app polls every 30 s and
+  picks up a cast started elsewhere.
+- **Pause/resume** works for sessions that have a TV attached (`/api/app/control`
+  `pause|resume`); live sessions hide the seek buttons.
 - The **Cast** button opens an in-app **Cast to** sheet with two sections:
   **Google Cast** (mDNS receivers, e.g. the TV box) and **Your TVs** (registered
   DLNA/Cast rows from the server, banned TVs excluded). Picking a TV sets it as

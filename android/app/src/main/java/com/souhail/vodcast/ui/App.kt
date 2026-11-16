@@ -113,6 +113,7 @@ import com.souhail.vodcast.data.MediaVariant
 import com.souhail.vodcast.data.SessionInfo
 import com.souhail.vodcast.data.ProgressInfo
 import com.souhail.vodcast.data.Settings
+import com.souhail.vodcast.data.SessionsResponse
 import com.souhail.vodcast.data.StatusInfo
 import com.souhail.vodcast.data.StreamInfo
 import com.souhail.vodcast.data.TvInfo
@@ -156,9 +157,23 @@ fun VodApp(settings: Settings) {
     var usingLan by remember { mutableStateOf(settings.usingLan) }
     var screen by remember { mutableStateOf<Screen>(if (settings.configured) Screen.Discover else Screen.Setup) }
     var selectedTv by remember { mutableStateOf<TvInfo?>(null) }
-    var lastStream by remember { mutableStateOf<StreamInfo?>(null) }
+    var lastStream by remember {
+        mutableStateOf(
+            if (settings.sessionToken.isNotBlank() || settings.sessionMode == "server") {
+                StreamInfo(
+                    ok = true,
+                    token = settings.sessionToken.ifBlank { null },
+                    title = settings.sessionTitle,
+                    mode = settings.sessionMode.ifBlank { null },
+                )
+            } else {
+                null
+            }
+        )
+    }
     var lastDevice by remember { mutableStateOf<DlnaDevice?>(null) }
-    var lastTitle by remember { mutableStateOf("") }
+    var lastTitle by remember { mutableStateOf(settings.sessionTitle) }
+    var lastSessionTv by remember { mutableStateOf(settings.sessionTv.ifBlank { null }) }
     var pendingPlay by remember { mutableStateOf<PendingPlay?>(null) }
     var showCast by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
@@ -182,11 +197,79 @@ fun VodApp(settings: Settings) {
     var filterYearTo by remember { mutableStateOf(0) }
     var filterLang by remember { mutableStateOf("") }
 
+    fun applySessions(resp: SessionsResponse) {
+        val active = resp.sessions.maxByOrNull { s -> s.started_at }
+        val serverPlay = resp.active_play
+        when {
+            serverPlay != null -> {
+                val title = active?.title?.takeIf { it.isNotBlank() }
+                    ?: settings.sessionTitle.ifBlank { serverPlay.tv ?: "Server cast" }
+                AppLog.i("SESSION", "restored server cast tv=${serverPlay.tv} title=$title")
+                lastStream = StreamInfo(
+                    ok = true,
+                    token = active?.token,
+                    title = title,
+                    mode = "server",
+                    live = active?.live == true,
+                )
+                lastTitle = title
+                lastSessionTv = serverPlay.tv
+                settings.sessionMode = "server"
+                settings.sessionTitle = title
+                settings.sessionToken = active?.token ?: ""
+                settings.sessionTv = serverPlay.tv ?: ""
+            }
+
+            active != null -> {
+                AppLog.i("SESSION", "restored ${active.token} ${active.title} tv=${active.tv}")
+                lastStream = StreamInfo(
+                    ok = true,
+                    token = active.token,
+                    title = active.title,
+                    mode = active.mode,
+                    live = active.live,
+                )
+                lastTitle = active.title
+                lastSessionTv = active.tv
+                settings.sessionToken = active.token
+                settings.sessionTitle = active.title
+                settings.sessionMode = active.mode
+                settings.sessionTv = active.tv ?: ""
+            }
+
+            settings.sessionToken.isNotBlank() -> {
+                AppLog.i("SESSION", "stale session ${settings.sessionToken}, clearing")
+                settings.clearSession()
+                lastStream = null
+                lastTitle = ""
+                lastSessionTv = null
+            }
+        }
+    }
+
     LaunchedEffect(api) {
         api?.let {
             runCatching { it.continueWatching() }
                 .onSuccess { resp -> continueItems = resp.items }
                 .onFailure { err -> AppLog.w("CONTINUE", err.message ?: "") }
+            runCatching { it.sessions() }.onSuccess { resp -> applySessions(resp) }
+            runCatching { it.tvs() }.onSuccess { list ->
+                val last = settings.lastTv
+                if (last.isNotBlank() && selectedTv == null) {
+                    selectedTv = list.firstOrNull { tv -> tv.name == last }
+                    if (selectedTv != null) AppLog.i("TVS", "restored selection ${selectedTv?.name}")
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(api, lastStream) {
+        val client = api ?: return@LaunchedEffect
+        if (lastStream != null) return@LaunchedEffect
+        while (true) {
+            delay(30_000)
+            runCatching { client.sessions() }.onSuccess { resp -> applySessions(resp) }
+            if (lastStream != null) break
         }
     }
 
@@ -484,6 +567,8 @@ fun VodApp(settings: Settings) {
                         },
                         continueItems = continueItems,
                         onContinue = { openContinue(it) },
+                        nowPlaying = if (lastStream != null) lastTitle.ifBlank { "Live stream" } else null,
+                        onOpenRemote = { screen = Screen.Remote },
                         filterRating = filterRating,
                         filterYearFrom = filterYearFrom,
                         filterYearTo = filterYearTo,
@@ -585,9 +670,13 @@ fun VodApp(settings: Settings) {
                             stream = stream,
                             title = lastTitle,
                             device = lastDevice,
+                            tvName = lastSessionTv,
                             onStop = {
                                 lastStream = null
                                 lastDevice = null
+                                lastTitle = ""
+                                lastSessionTv = null
+                                settings.clearSession()
                                 screen = Screen.Discover
                             },
                             notify = { toast = it },
@@ -615,6 +704,11 @@ fun VodApp(settings: Settings) {
                 lastStream = stream
                 lastDevice = device
                 lastTitle = title
+                lastSessionTv = selectedTv?.name
+                settings.sessionToken = stream.token ?: ""
+                settings.sessionTitle = title
+                settings.sessionMode = stream.mode ?: ""
+                settings.sessionTv = selectedTv?.name ?: ""
                 pendingPlay = null
                 screen = Screen.Remote
             },
@@ -724,6 +818,8 @@ private fun DiscoverScreen(
     onOpenLive: (LiveChannel) -> Unit,
     continueItems: List<ContinueItem>,
     onContinue: (ContinueItem) -> Unit,
+    nowPlaying: String?,
+    onOpenRemote: () -> Unit,
     filterRating: Double,
     filterYearFrom: Int,
     filterYearTo: Int,
@@ -752,6 +848,38 @@ private fun DiscoverScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+            }
+        }
+        if (nowPlaying != null) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    Row(
+                        Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Now playing", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                nowPlaying,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextButton(onClick = onOpenRemote) { Text("Control") }
+                    }
+                }
             }
         }
         item {
@@ -1970,7 +2098,11 @@ private fun PlayDialog(
                         error = result.detail ?: result.error ?: "TV cast failed"
                         return@launch
                     }
-                    onStart(StreamInfo(ok = true, title = pending.title, mode = "server"), null, pending.title)
+                    onStart(
+                        StreamInfo(ok = true, title = pending.title, mode = "server", live = pending.isLive),
+                        null,
+                        pending.title,
+                    )
                 } catch (e: Exception) {
                     AppLog.e("SERVER_CAST", "failed for ${picked.name}", e)
                     error = e.message
@@ -2311,6 +2443,7 @@ private fun RemoteScreen(
     stream: StreamInfo,
     title: String,
     device: DlnaDevice?,
+    tvName: String?,
     onStop: () -> Unit,
     notify: (String) -> Unit,
 ) {
@@ -2319,8 +2452,9 @@ private fun RemoteScreen(
     var session by remember { mutableStateOf<SessionInfo?>(null) }
     var status by remember { mutableStateOf<StatusInfo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var proxyPaused by remember { mutableStateOf(false) }
     val isServer = stream.mode == "server"
-    val isLive = stream.mode == "live" || status?.diag?.is_live == true
+    val isLive = stream.mode == "live" || stream.live || status?.diag?.is_live == true
 
     LaunchedEffect(stream.token, isServer) {
         if (isServer) {
@@ -2455,6 +2589,24 @@ private fun RemoteScreen(
                 }) {
                     Icon(
                         if (status?.paused == true) Icons.Default.PlayArrow else Icons.Default.Pause,
+                        contentDescription = null,
+                    )
+                }
+            } else if (tvName != null) {
+                Button(onClick = {
+                    scope.launch {
+                        try {
+                            val token = stream.token ?: return@launch
+                            AppLog.action(if (proxyPaused) "resume" else "pause", "session tv=$tvName")
+                            api.control(token, if (proxyPaused) "resume" else "pause")
+                            proxyPaused = !proxyPaused
+                        } catch (e: Exception) {
+                            notify(e.message ?: "control failed")
+                        }
+                    }
+                }) {
+                    Icon(
+                        if (proxyPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
                         contentDescription = null,
                     )
                 }

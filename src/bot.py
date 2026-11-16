@@ -3532,7 +3532,7 @@ async def main() -> None:
 
     async def api_app_stream(media_key: str, start_position: float = 0.0, mode: str = "cache",
                              quality: str = "copy", prepare: int = 0, format: str = "",
-                             declare_current: int = 1) -> dict:
+                             declare_current: int = 1, tv: str = "") -> dict:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
@@ -3567,6 +3567,8 @@ async def main() -> None:
                 )
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
+        if tv:
+            s.tv_name = tv
         from . import urlsign
 
         duration = s.duration_s or 0.0
@@ -3582,6 +3584,7 @@ async def main() -> None:
             "ok": True, "token": s.token, "title": payload["title"],
             "mime": s.mime, "duration": duration, "mode": s.mode,
             "format": served_ext, "prepared": deferred,
+            "live": bool(s.is_live),
             "start_offset": float(start_position or 0.0), **urls,
         }
 
@@ -3611,7 +3614,53 @@ async def main() -> None:
             except Exception as exc:
                 return {"ok": False, "error": str(exc)[:200]}
             return {"ok": bool(ok), "detail": detail}
+        if action in ("pause", "resume", "play"):
+            if not s.tv_name:
+                return {"ok": False, "error": "no TV attached to this session"}
+            target = await _resolve_renderer(s.tv_name)
+            if target is None:
+                return {"ok": False, "error": "TV not found or off"}
+            try:
+                if isinstance(target, CastTarget):
+                    from .cc import pause as cc_pause
+                    from .cc import resume as cc_resume
+
+                    ok = (cc_resume if action != "pause" else cc_pause)(target.ip)
+                else:
+                    from .caster import pause as dlna_pause
+                    from .caster import resume as dlna_resume
+
+                    ok = await (dlna_resume if action != "pause" else dlna_pause)(target)
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)[:160]}
+            return {"ok": bool(ok), "state": "playing" if action != "pause" else "paused"}
         return {"ok": False, "error": f"unsupported action {action}"}
+
+    async def api_app_sessions() -> dict:
+        out = []
+        for s in proxy.list_sessions():
+            pos = proxy.progress_seconds(s)
+            out.append({
+                "token": s.token,
+                "title": s.title,
+                "mode": s.mode,
+                "mime": s.mime,
+                "position": round(pos[0], 1) if pos else None,
+                "duration": round(pos[1], 1) if pos else round(s.duration_s or 0.0, 1),
+                "max_served": s.max_served,
+                "clients": s.clients,
+                "live": bool(s.is_live),
+                "tv": s.tv_name,
+                "started_at": s.started_at,
+            })
+        active = None
+        if active_play is not None:
+            active = {
+                "tv": active_play.tv_name,
+                "paused": active_play.paused,
+                "token": active_play.proxy_token,
+            }
+        return {"ok": True, "sessions": out, "active_play": active}
 
     async def api_live_categories() -> list:
         cats = await provider.live_categories()
@@ -3652,7 +3701,7 @@ async def main() -> None:
         lan_ip = proxy.lan_ip_for("192.168.1.1")
         urls = urlsign.urls_for(s.token, lan_ip, ext="ts")
         return {"ok": True, "token": s.token, "title": title, "mime": "video/mpeg",
-                "mode": "live", "duration": 0.0, "start_offset": 0.0, **urls}
+                "mode": "live", "duration": 0.0, "start_offset": 0.0, "live": True, **urls}
 
     async def api_app_config() -> dict:
         import socket
@@ -3733,7 +3782,8 @@ async def main() -> None:
     web_bind(loop=asyncio.get_running_loop(), search=api_search, episodes=api_episodes,
              tvs=api_tvs, play=api_play, live_play=api_live_play, control=api_control, status=api_status,
              test_virtual=api_test_virtual,
-             app_stream=api_app_stream, app_session=api_app_session, app_control=api_app_control,
+             app_stream=api_app_stream, app_session=api_app_session, app_sessions=api_app_sessions,
+             app_control=api_app_control,
              app_config=api_app_config, tv_detail=api_tv_detail, tv_probe=api_tv_probe,
              banned_tvs=api_banned_tvs, ban_tv=api_ban_tv, unban_tv=api_unban_tv,
              live_categories=api_live_categories, live_list=api_live_list, live_stream=api_live_stream,
