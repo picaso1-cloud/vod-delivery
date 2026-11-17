@@ -1347,7 +1347,9 @@ private fun GroupRow(group: MediaGroup, onClick: () -> Unit) {
                 listOfNotNull(
                     group.year?.toString(),
                     group.kind.replaceFirstChar { it.uppercase() },
-                    group.variants.firstOrNull()?.lang,
+                    group.variants.mapNotNull { it.lang }.distinct().take(4)
+                        .joinToString(" · ")
+                        .takeIf { it.isNotBlank() },
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1431,22 +1433,57 @@ private fun DetailScreen(
     var added by remember { mutableStateOf(false) }
     var resume by remember { mutableStateOf(0.0) }
     var similar by remember { mutableStateOf<List<MediaGroup>>(emptyList()) }
+    var variant by remember(group) { mutableStateOf(group.variants.firstOrNull()) }
+    var counts by remember(group) { mutableStateOf<Map<String, Pair<Int, Int>>>(emptyMap()) }
+    var dead by remember(group) { mutableStateOf<Set<String>>(emptySet()) }
+    var picked by remember(group) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val seriesId = group.variants.firstOrNull()?.media_key?.removePrefix("series:")?.toIntOrNull()
+    val seriesId = variant?.media_key?.removePrefix("series:")?.toIntOrNull()
 
     LaunchedEffect(group) {
+        if (group.kind == "series" && group.variants.size > 1) {
+            group.variants.forEach { v ->
+                val id = v.media_key.removePrefix("series:").toIntOrNull() ?: return@forEach
+                scope.launch {
+                    runCatching { api.episodes(id) }
+                        .onSuccess { resp ->
+                            val seasons = resp.items.keys.size
+                            val eps = resp.items.values.sumOf { it.size }
+                            counts = counts + (v.media_key to (seasons to eps))
+                        }
+                        .onFailure { dead = dead + v.media_key }
+                }
+            }
+        }
+        val key = group.variants.firstOrNull()?.media_key
+        if (key != null) {
+            runCatching { api.similar(key) }.onSuccess { similar = it.items }
+        }
+    }
+
+    LaunchedEffect(counts, dead) {
+        if (!picked && group.kind == "series" && counts.isNotEmpty()) {
+            val best = group.variants
+                .filter { counts.containsKey(it.media_key) }
+                .maxByOrNull { counts.getValue(it.media_key).second }
+            if (best != null && best.media_key != variant?.media_key) {
+                variant = best
+            }
+        }
+    }
+
+    LaunchedEffect(group, variant) {
+        val selected = variant ?: return@LaunchedEffect
         if (group.kind == "series" && seriesId != null) {
+            episodes = null
+            error = null
             try {
                 episodes = api.episodes(seriesId)
             } catch (e: Exception) {
                 error = e.message
             }
         }
-        val key = group.variants.firstOrNull()?.media_key
-        if (key != null) {
-            runCatching { api.progress(key) }.onSuccess { resume = it.position }
-            runCatching { api.similar(key) }.onSuccess { similar = it.items }
-        }
+        runCatching { api.progress(selected.media_key) }.onSuccess { resume = it.position }
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
@@ -1474,6 +1511,12 @@ private fun DetailScreen(
                             group.kind.replaceFirstChar { it.uppercase() },
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (group.kind == "series") {
+                            Text(
+                                languageName(variant?.lang),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -1485,7 +1528,7 @@ private fun DetailScreen(
             ) {
                 Button(
                     onClick = {
-                        val key = group.variants.firstOrNull()?.media_key
+                        val key = variant?.media_key
                         if (key == null) {
                             notify("No playable variant")
                             return@Button
@@ -1509,7 +1552,7 @@ private fun DetailScreen(
                 }
                 OutlinedButton(
                     onClick = {
-                        val key = group.variants.firstOrNull()?.media_key ?: return@OutlinedButton
+                        val key = variant?.media_key ?: return@OutlinedButton
                         scope.launch {
                             try {
                                 val result = api.watchlistAdd(key)
@@ -1542,6 +1585,43 @@ private fun DetailScreen(
                 )
             }
         }
+        if (group.kind == "series" && group.variants.size > 1) {
+            item {
+                SectionHeader(
+                    "Languages",
+                    "Season lists differ per stream — pick the one with every episode.",
+                )
+            }
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(
+                        group.variants.sortedWith(
+                            compareBy({ it.lang ?: "" }, { -(counts[it.media_key]?.second ?: -1) })
+                        )
+                    ) { v ->
+                        val stat = counts[v.media_key]
+                        val unavailable = v.media_key in dead
+                        FilterChip(
+                            selected = v.media_key == variant?.media_key,
+                            enabled = !unavailable,
+                            onClick = { variant = v; picked = true },
+                            label = {
+                                Text(
+                                    languageName(v.lang) + when {
+                                        unavailable -> " · unavailable"
+                                        stat != null -> " · ${stat.second} eps"
+                                        else -> " · …"
+                                    }
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+        }
         if (group.kind == "series") {
             val data = episodes
             if (data == null && error == null) {
@@ -1551,7 +1631,7 @@ private fun DetailScreen(
                     }
                 }
             }
-            data?.items?.forEach { (season, entries) ->
+            data?.items?.toSortedMap(compareBy { it.toIntOrNull() ?: 0 })?.forEach { (season, entries) ->
                 item { SectionHeader("Season $season") }
                 items(entries) { ep ->
                     ListItem(

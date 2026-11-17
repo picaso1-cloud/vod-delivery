@@ -132,7 +132,9 @@ def search(query: dict, k: int = 6, depth: int = 80) -> list[Group]:
         if key not in groups:
             groups[key] = Group(kind, key[1], title, native, year, poster, plot, scores[gid])
         group = groups[key]
-        if any(v.lang == lang and v.subs_lang == subs_lang for v in group.variants):
+        if any(v.ref_id == ref_id for v in group.variants):
+            continue
+        if kind == "movie" and any(v.lang == lang and v.subs_lang == subs_lang for v in group.variants):
             continue
         group.variants.append(Variant(lang, ref_id, ext, rating, row["category_id"], subs_lang))
 
@@ -311,7 +313,9 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
             groups[key].best_score = score
             best[key] = score
         group = groups[key]
-        if any(v.lang == row_lang and v.subs_lang == subs for v in group.variants):
+        if any(v.ref_id == ref_id for v in group.variants):
+            return
+        if kind == "movie" and any(v.lang == row_lang and v.subs_lang == subs for v in group.variants):
             return
         group.variants.append(Variant(row_lang, ref_id, ext or "mkv", rating or 0, category, subs))
 

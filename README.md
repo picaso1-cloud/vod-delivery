@@ -132,6 +132,23 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.3 — 2026-11-17
+
+- **Series language picker**: the detail screen lists every stream of a series
+  with its language and real episode count (`English · 40 eps`,
+  `English · 30 eps`, `French · 37 eps`, …) and starts on the most complete
+  one, so a stream with a half-empty final season is no longer the only choice.
+  Unreachable streams are marked `unavailable`. Search cards show every
+  language (`2022 · Series · EN · FR`).
+- **Same-language duplicates are kept for series**: the catalog carries the same
+  show several times per language with different completeness (FROM: EN 30 eps
+  vs EN 40 eps, FR 22/32/37). Only one was kept before, and it happened to be an
+  incomplete one. Movies still dedupe per language.
+- Telegram: multi-stream series now get one "📚 <language>" button per stream
+  instead of a single "Browse episodes" that always picked the first.
+- Merged search results union their variants instead of keeping only the first
+  group's list.
+
 ### 0.3.2 — 2026-11-17
 
 - **Fix: titles that are English function words were unfindable.** "from",

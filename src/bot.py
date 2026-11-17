@@ -47,13 +47,19 @@ def _group_key(group: Group) -> tuple:
 
 def _merge_groups(primary: list[Group], extra: list[Group]) -> list[Group]:
     merged: list[Group] = []
-    seen: set = set()
+    by_key: dict[tuple, Group] = {}
     for group in list(primary) + list(extra):
         key = _group_key(group)
-        if key in seen:
+        existing = by_key.get(key)
+        if existing is None:
+            merged.append(group)
+            by_key[key] = group
             continue
-        seen.add(key)
-        merged.append(group)
+        known = {v.ref_id for v in existing.variants}
+        for variant in group.variants:
+            if variant.ref_id not in known:
+                existing.variants.append(variant)
+                known.add(variant.ref_id)
     return merged
 
 
@@ -231,21 +237,34 @@ def _tv_keyboard(session: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _variant_labels(group: Group) -> list[str]:
+    counts: dict[str, int] = {}
+    labels = []
+    for variant in group.variants:
+        base = _lang_label(variant)
+        counts[base] = counts.get(base, 0) + 1
+        labels.append(base if counts[base] == 1 else f"{base} #{counts[base]}")
+    return labels
+
+
 def _group_keyboard(gi: int, group: Group) -> InlineKeyboardMarkup:
     if group.kind == "movie":
-        rows = [[InlineKeyboardButton(text="▶ " + _lang_label(v), callback_data=f"sel:{gi}:{vi}")] for vi, v in enumerate(group.variants[:8])]
+        rows = [[InlineKeyboardButton(text="▶ " + label, callback_data=f"sel:{gi}:{vi}")]
+                for vi, label in enumerate(_variant_labels(group)[:8])]
         rows.append([InlineKeyboardButton(text="➕ Watchlist", callback_data=f"wl:{gi}")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📚 Browse episodes", callback_data=f"sel:{gi}:0")],
-            [InlineKeyboardButton(text="➕ Watchlist", callback_data=f"wl:{gi}")],
-        ]
-    )
+    labels = _variant_labels(group)
+    if len(group.variants) > 1:
+        rows = [[InlineKeyboardButton(text="📚 " + label, callback_data=f"sel:{gi}:{vi}")]
+                for vi, label in enumerate(labels[:8])]
+    else:
+        rows = [[InlineKeyboardButton(text="📚 Browse episodes", callback_data=f"sel:{gi}:0")]]
+    rows.append([InlineKeyboardButton(text="➕ Watchlist", callback_data=f"wl:{gi}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _send_group(send, gi: int, group: Group, note: str) -> None:
-    langs = " · ".join(_lang_label(v) for v in group.variants[:6])
+    langs = " · ".join(dict.fromkeys(_lang_label(v) for v in group.variants))
     caption = f"<b>{group.title}</b>" + (f" ({group.year})" if group.year else "") + f"\n<i>{langs}</i>\n{note}"
     keyboard = _group_keyboard(gi, group)
     if group.poster:
@@ -3008,14 +3027,7 @@ async def main() -> None:
             keyword_search, q, kind or None, 12, year_from, year_to, rating_min, lang, genre
         )
 
-        merged: list[Group] = []
-        seen: set = set()
-        for g in list(groups) + list(keyword_groups):
-            k = (g.kind, normalize_for_grouping(g.title), g.year)
-            if k in seen:
-                continue
-            seen.add(k)
-            merged.append(g)
+        merged = _merge_groups(list(groups), list(keyword_groups))
         pick_keys = {(g.kind, normalize_for_grouping(g.title), g.year) for g in merged[:1]}
         data = {
             "ok": True, "query": q, "ai_pending": bool(merged) and query_has_signal(q), "ai_note": "", "ai_picks": [],
