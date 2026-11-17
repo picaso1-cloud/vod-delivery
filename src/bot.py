@@ -208,6 +208,17 @@ def _lang_label(v) -> str:
     return name
 
 
+def _tv_confirm_hint(name: str | None) -> str:
+    low = (name or "").lower()
+    if "webos" in low or "lg" in low:
+        return (
+            "\n\n💡 If the TV showed a prompt (Allow this device / start playback?), "
+            "press <b>OK</b> on the remote and try again — this DMR rejects the cast "
+            "while that dialog is open."
+        )
+    return ""
+
+
 def _fmt_time(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
@@ -762,6 +773,8 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                 state = "STOPPED"
         result = f"{pre}📺 <b>{renderer.friendly_name}</b> → “{payload['title']}”\nPlayer state: <b>{state}</b>"
         if state != "PLAYING":
+            result += _tv_confirm_hint(renderer.friendly_name)
+        if state != "PLAYING":
             if access_denied:
                 return result + (
                     "\n\n🛑 The TV's player refused the stream (access denied — its DLNA stack is stuck, "
@@ -1004,6 +1017,8 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
             break
 
     result = f"{pre}📺 <b>{renderer.friendly_name}</b> → “{payload['title']}”\nPlayer state: <b>{state}</b>"
+    if state != "PLAYING":
+        result += _tv_confirm_hint(renderer.friendly_name)
     if state == "STOPPED" and control_timeouts >= 2:
         result += (
             "\n\n🛑 The TV stopped responding during the cast (control plane timeout). "

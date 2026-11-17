@@ -181,7 +181,15 @@ async def cast(renderer: Renderer, uri: str, title: str, extension: str = "mkv",
                 InstanceID=0, CurrentURI=uri, CurrentURIMetaData=_unescape_didl(didl))
 
     await asyncio.sleep(0.7)
-    await service.action("Play").async_call(InstanceID=0, Speed="1")
+    try:
+        await service.action("Play").async_call(InstanceID=0, Speed="1")
+    except UpnpError as exc:
+        if getattr(exc, "error_code", None) == 501:
+            logger.info("Play returned 501 — retrying once in 5s (TV may be showing a confirmation prompt)")
+            await asyncio.sleep(5)
+            await service.action("Play").async_call(InstanceID=0, Speed="1")
+        else:
+            raise
     await asyncio.sleep(1.0)
     return await _transport_state(device)
 
