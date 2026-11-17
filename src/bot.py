@@ -819,10 +819,11 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
             attempts.append(("proxy", "downgrade"))
         attempts.append(("proxy", "copy"))
     else:
-        attempts.append(("direct", "copy"))
+        attempts.append(("cache_mkv", "copy"))
         if downgrade:
             attempts.append(("proxy", "downgrade"))
         attempts.append(("proxy", "copy"))
+        attempts.append(("direct", "copy"))
 
     state = "STOPPED"
     used = None
@@ -874,12 +875,13 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
             proxy_token = session_obj.token
             url, ext = proxy.proxied_url(session_obj.token, tv_ip), "ts"
             duration_s = session_obj.duration_s
-        elif mode == "cache":
+        elif mode in ("cache", "cache_mkv"):
+            cache_mime = "video/x-matroska" if mode == "cache_mkv" else "video/mpeg"
             try:
                 session_obj = await proxy.start_session(
                     payload["url"], payload["title"],
                     mode=f"cache_{quality}" if quality == "downgrade" else "cache",
-                    mime="video/mpeg",
+                    mime=cache_mime,
                     start_offset=session.get("resume_pos") or 0.0,
                     audio_index=session.get("audio_index"),
                     sub_index=session.get("sub_index"),
@@ -906,7 +908,7 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
                     )
                 logger.warning("cache session %s priming slowly — casting anyway", session_obj.token)
             url = proxy.proxied_url(session_obj.token, tv_ip)
-            ext = "ts"
+            ext = "mkv" if mode == "cache_mkv" else "ts"
         elif mode == "proxy":
             session_obj = await proxy.start_session(
                 payload["url"], payload["title"], mode=quality,
@@ -986,7 +988,7 @@ async def _execute_cast_inner(session: dict, chat_id: int, user_id: int) -> str:
         if state == "PLAYING":
             used = f"{mode}/{quality}"
             break
-        if proxy_token and mode in ("cache", "proxy", "virtual"):
+        if proxy_token and mode in ("cache", "cache_mkv", "proxy", "virtual"):
             try:
                 await proxy.stop_session(proxy_token)
             except Exception:

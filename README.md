@@ -148,6 +148,11 @@ Casting rules the app follows:
   instead of a single "Browse episodes" that always picked the first.
 - Merged search results union their variants instead of keeping only the first
   group's list.
+- **webOS (LG DMRplus) casting fixed**: plain-DLNA TVs now start with a
+  file-mode MKV remux (`cache_mkv`) instead of piping a live TS. The webOS DMR
+  accepts a real file with byte ranges and starts in ~2 s; the previous direct
+  provider URL returned 716 and the chunked pipe made `Play` time out after 30 s
+  and wedged the stack. Verified end-to-end: `PLAYING`, 68 MB served.
 
 ### 0.3.2 — 2026-11-17
 
