@@ -152,7 +152,8 @@ def search(query: dict, k: int = 6, depth: int = 80) -> list[Group]:
 
 STOP_WORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "about",
-    "from", "by", "movie", "movies", "film", "films", "series", "show", "shows", "watch",
+    "from", "by", "movie", "movies", "film", "films", "series", "show", "shows", "tv",
+    "episode", "episodes", "season", "seasons", "watch",
     "want", "watching", "something", "some", "like", "best", "good", "great", "top",
     "me", "i", "we", "you", "my", "is", "are", "was", "were", "be", "that", "this",
     "it", "its", "into", "find", "looking", "search", "suggestion", "suggestions",
@@ -180,6 +181,10 @@ def _fold(text: str) -> str:
     text = unicodedata.normalize("NFKD", text.lower())
     text = "".join(c for c in text if not unicodedata.combining(c))
     return re.sub(r"[\u064b-\u065f\u0670\u0640]", "", text)
+
+
+def query_has_signal(text: str) -> bool:
+    return bool(_query_tokens(text))
 
 
 def _query_tokens(text: str) -> list[str]:
@@ -225,10 +230,46 @@ def _row_allowed(kind, year, rating, lang_value, genre_value, media_type,
     return True
 
 
+def _raw_tokens(text: str) -> list[str]:
+    return [
+        t for t in re.findall(r"[a-z0-9\u0600-\u06ff]+", _fold(text))
+        if len(t) >= 2
+    ][:4]
+
+
+def _title_core(title: str) -> str:
+    return re.sub(r"\s*\(\d{4}\)\s*$", "", (title or "").strip().lower()).strip()
+
+
+def _phrase_candidates(text: str) -> list[str]:
+    phrase = " ".join(_fold(text).split())
+    if not phrase:
+        return []
+    candidates = [phrase]
+    cleaned = phrase
+    while True:
+        nxt = re.sub(r"\s+(?:movie|movies|film|films|series|shows?|tv)\s*$", "", cleaned).strip()
+        if nxt == cleaned or not nxt:
+            break
+        cleaned = nxt
+    for base in (phrase, cleaned):
+        stripped = re.sub(r"\s*\(?\b(?:19|20)\d{2}\)?\s*$", "", base).strip()
+        bare = " ".join(t for t in base.split() if t not in STOP_WORDS).strip()
+        for cand in (base, stripped, bare):
+            if cand and cand not in candidates:
+                candidates.append(cand)
+    for token in _raw_tokens(phrase):
+        if token in ("movie", "movies", "film", "films", "series", "show", "shows", "tv"):
+            continue
+        if token not in candidates:
+            candidates.append(token)
+    return candidates
+
+
 def keyword_search(text: str, media_type: str | None = None, k: int = 12,
                    year_from: int = 0, year_to: int = 0, rating_min: float = 0.0,
                    lang: str = "", genre: str = "") -> list[Group]:
-    tokens = _query_tokens(text)
+    tokens = _query_tokens(text) or _raw_tokens(text)
     if not tokens:
         return []
     phrase = " ".join(_fold(text).split())
@@ -236,16 +277,23 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
     groups: dict[tuple, Group] = {}
     best: dict[tuple, float] = {}
 
-    def add_row(kind, ref_id, title, year, poster, rating, row_lang, ext, subs, category, plot, fts_rank=0.0):
+    def add_row(kind, ref_id, title, year, poster, rating, row_lang, ext, subs, category, plot,
+                fts_rank=0.0, bonus=0.0):
+        if not year:
+            year_match = re.search(r"\((\d{4})\)\s*$", title or "")
+            if year_match:
+                year = int(year_match.group(1))
         if not _row_allowed(kind, year, rating, row_lang, plot if kind == "series" else "",
                             media_type, year_from, year_to, rating_min, lang, genre):
             return
         lowered = (title or "").lower()
+        core = _title_core(lowered)
         score = max(0.0, -float(fts_rank)) * 0.05
-        if lowered == phrase:
+        if lowered == phrase or core == phrase:
             score += 120
         elif phrase and phrase in lowered:
             score += 60
+        score += bonus
         for token in tokens:
             if token in lowered:
                 score += 10
@@ -336,6 +384,32 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
                     "series", row["series_id"], row["title"], row["year"], row["poster"],
                     row["rating"], row["lang"], "mkv", None, row["category_id"], row["plot"] or "",
                 )
+
+        if phrase:
+            candidates = _phrase_candidates(phrase)
+            for cand in candidates:
+                year_suffix = f"{cand} (%"
+                bonus = 140.0 if cand == phrase else 120.0
+                for row in conn.execute(
+                    "SELECT stream_id, title, year, poster, rating, lang, ext, subs_lang, category_id "
+                    "FROM movies WHERE lower(title) = ? OR lower(title) LIKE ? LIMIT 60",
+                    (cand, year_suffix),
+                ):
+                    add_row(
+                        "movie", row["stream_id"], row["title"], row["year"], row["poster"],
+                        row["rating"], row["lang"], row["ext"], row["subs_lang"],
+                        row["category_id"], "", bonus=bonus,
+                    )
+                for row in conn.execute(
+                    "SELECT series_id, title, year, poster, rating, lang, plot, genre, category_id "
+                    "FROM series WHERE lower(title) = ? OR lower(title) LIKE ? LIMIT 60",
+                    (cand, year_suffix),
+                ):
+                    add_row(
+                        "series", row["series_id"], row["title"], row["year"], row["poster"],
+                        row["rating"], row["lang"], "mkv", None, row["category_id"],
+                        row["plot"] or "", bonus=bonus,
+                    )
     finally:
         conn.close()
 

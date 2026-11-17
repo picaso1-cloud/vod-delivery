@@ -132,6 +132,24 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.2 — 2026-11-17
+
+- **Fix: titles that are English function words were unfindable.** "from",
+  "it", "you", "them" were dropped by the search stopword filter, so the name
+  lookup returned nothing and only meaningless vector neighbours were shown.
+  Now the stopword filter falls back to the raw words, exact-title matching also
+  strips a trailing `(YYYY)` and trailing `movie/series/show/tv`, and a
+  dedicated exact-title pass runs for every query. `FROM (2022)` is the first
+  result again.
+- When a query has no semantic signal (all stopwords, e.g. "from"), the app
+  skips vector/AI suggestions entirely — no more unrelated Arabic shows under
+  "By meaning" and no AI picks built from them.
+- The Telegram bot uses the same merged name+semantic search, and rescues
+  messages the LLM classified as smalltalk/status when the text is exactly a
+  catalog title ("from" used to get "I'm your media butler").
+- The app re-runs the search when you switch Movies/Shows/Live TV, instead of
+  clearing the results and waiting for another tap on Search.
+
 ### 0.3.1 — 2026-11-16
 
 - **Fix: failed casts poisoned the provider.** When a cache session never

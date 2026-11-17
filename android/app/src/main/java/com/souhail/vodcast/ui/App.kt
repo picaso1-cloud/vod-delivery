@@ -547,7 +547,11 @@ fun VodApp(settings: Settings) {
                             contentType = type
                             discover = null
                             liveResults = emptyList()
-                            if (type == "live") runSearch(text = "", kind = "live", category = 0)
+                            if (type == "live") {
+                                runSearch(text = "", kind = "live", category = 0)
+                            } else if (query.isNotBlank()) {
+                                runSearch(text = query, kind = type)
+                            }
                         },
                         query = query,
                         onQuery = { query = it },

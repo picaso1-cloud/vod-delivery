@@ -31,7 +31,7 @@ from .provider import health as provider_health
 
 
 from .parsing import normalize_for_grouping
-from .search import Group, keyword_search, search as search_media
+from .search import Group, keyword_search, query_has_signal, search as search_media
 from .ssdp import Renderer, discover_renderers
 from .caster import cast, get_position, playback_state, probe_duration, seek, stop
 
@@ -39,6 +39,48 @@ logger = logging.getLogger("vod-delivery")
 _DISCOVER_CACHE: dict[str, tuple[float, dict]] = {}
 _DISCOVER_AI_CACHE: dict[str, tuple[float, dict]] = {}
 _STARTED_AT = time.time()
+
+
+def _group_key(group: Group) -> tuple:
+    return (group.kind, normalize_for_grouping(group.title), group.year)
+
+
+def _merge_groups(primary: list[Group], extra: list[Group]) -> list[Group]:
+    merged: list[Group] = []
+    seen: set = set()
+    for group in list(primary) + list(extra):
+        key = _group_key(group)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(group)
+    return merged
+
+
+async def _search_groups(query: dict, k: int = 12) -> list[Group]:
+    title = (query.get("title") or "").strip()
+    if not title:
+        return []
+    vector_groups: list[Group] = []
+    if query_has_signal(title):
+        vector_groups = await asyncio.to_thread(search_media, query, k)
+    keyword_groups = await asyncio.to_thread(
+        keyword_search, title, query.get("media_type"), k, 0, 0, 0.0,
+        query.get("language") or "",
+    )
+    if keyword_groups and keyword_groups[0].best_score >= 120:
+        return _merge_groups(keyword_groups, vector_groups)[:k]
+    return _merge_groups(vector_groups, keyword_groups)[:k]
+
+
+async def _exact_title_in_text(text: str) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned or cleaned.startswith("/") or len(cleaned) > 60 or cleaned.endswith("?"):
+        return None
+    groups = await asyncio.to_thread(keyword_search, cleaned, None, 1)
+    if groups and groups[0].best_score >= 120:
+        return cleaned
+    return None
 
 
 async def _resolve_media_key(media_key: str) -> dict | None:
@@ -1245,7 +1287,7 @@ async def main() -> None:
                 await status.edit_text(note + "\nNo local matches yet.")
             return
         await status.edit_text(f"🔎 Searching <b>{query['title']}</b> {wants}…")
-        groups = await asyncio.to_thread(search_media, query, MAX_CANDIDATES)
+        groups = await _search_groups(query, MAX_CANDIDATES)
         if not groups:
             await status.edit_text("Nothing close enough. Try the English or French title, or check the year.")
             return
@@ -2179,6 +2221,15 @@ async def main() -> None:
                 await message.answer("I couldn't tell which series you mean — send <i>continue</i> to see what you were watching.")
             return
 
+        if intent in ("status", "smalltalk", "feedback"):
+            rescued = await _exact_title_in_text(message.text or "")
+            if rescued:
+                await run_search(message, status, {
+                    "intent": "search", "title": rescued, "year": None,
+                    "language": None, "subtitles": None, "media_type": None,
+                })
+                return
+
         if intent == "status":
             if active_play:
                 conn = store.connect()
@@ -2189,15 +2240,14 @@ async def main() -> None:
                 await status.edit_text("Nothing is playing right now. Name a movie or series and I'll cast it!")
             return
 
-        if intent == "feedback":
-            await status.edit_text(
-                "Sorry about that 🙏 — tell me the <b>title</b> and I'll try again. "
-                "You can also send <i>continue</i> to resume, or <i>next episode</i> to skip ahead."
-            )
-            return
-
-        if intent == "smalltalk":
-            await status.edit_text("👋 I'm your media butler — send a movie or series name and I'll cast it to a TV.")
+        if intent in ("smalltalk", "feedback"):
+            if intent == "feedback":
+                await status.edit_text(
+                    "Sorry about that 🙏 — tell me the <b>title</b> and I'll try again. "
+                    "You can also send <i>continue</i> to resume, or <i>next episode</i> to skip ahead."
+                )
+            else:
+                await status.edit_text("👋 I'm your media butler — send a movie or series name and I'll cast it to a TV.")
             return
 
         if query.get("episode") and query.get("media_type") == "series":
@@ -2205,6 +2255,13 @@ async def main() -> None:
                 return
 
         if not query.get("title"):
+            rescued = await _exact_title_in_text(message.text or "")
+            if rescued:
+                await run_search(message, status, {
+                    "intent": "search", "title": rescued, "year": None,
+                    "language": None, "subtitles": None, "media_type": None,
+                })
+                return
             await status.edit_text("Couldn't find a title in that — try naming the movie or series.")
             return
         await run_search(message, status, query)
@@ -2237,7 +2294,7 @@ async def main() -> None:
         conn.close()
 
         if series_id is None and words:
-            groups = await asyncio.to_thread(search_media, query, MAX_CANDIDATES)
+            groups = await _search_groups(query, MAX_CANDIDATES)
             for group in groups:
                 if group.kind == "series" and (_title_words(group.title) & words):
                     series_id = group.variants[0].ref_id
@@ -2941,10 +2998,12 @@ async def main() -> None:
         if cached and now - cached[0] < 600:
             return key, cached[1]
 
-        groups = await asyncio.to_thread(
-            search_media, {"title": q, "media_type": kind or None, "language": lang or None}, 12
-        )
-        groups = _filter_groups(groups, year_from, year_to, rating_min, lang)
+        groups = []
+        if query_has_signal(q):
+            groups = await asyncio.to_thread(
+                search_media, {"title": q, "media_type": kind or None, "language": lang or None}, 12
+            )
+            groups = _filter_groups(groups, year_from, year_to, rating_min, lang)
         keyword_groups = await asyncio.to_thread(
             keyword_search, q, kind or None, 12, year_from, year_to, rating_min, lang, genre
         )
@@ -2959,7 +3018,8 @@ async def main() -> None:
             merged.append(g)
         pick_keys = {(g.kind, normalize_for_grouping(g.title), g.year) for g in merged[:1]}
         data = {
-            "ok": True, "query": q, "ai_pending": bool(merged), "ai_note": "", "ai_picks": [],
+            "ok": True, "query": q, "ai_pending": bool(merged) and query_has_signal(q), "ai_note": "", "ai_picks": [],
+            "name_only": not query_has_signal(q),
             "by_name": [_group_json(g) for g in keyword_groups],
             "by_meaning": [_group_json(g) for g in groups],
         }
@@ -2984,6 +3044,11 @@ async def main() -> None:
         cached = _DISCOVER_AI_CACHE.get(key)
         if cached and now - cached[0] < 600:
             return cached[1]
+        if data.get("name_only"):
+            result = {"ok": True, "query": query, "ai_picks": [],
+                      "ai_note": "Title search — exact names are listed below."}
+            _DISCOVER_AI_CACHE[key] = (now, result)
+            return result
 
         pool = list(data.get("by_meaning") or []) + list(data.get("by_name") or [])
         candidates: list[dict] = []
@@ -3182,7 +3247,7 @@ async def main() -> None:
             ql = q.lower().strip()
             hits = [s for s in streams if ql in (s.get("name") or "").lower()] if ql else streams[:50]
             return [{"kind": "live", "channel_id": s["stream_id"], "title": s.get("name")} for s in hits[:40]]
-        groups = await asyncio.to_thread(search_media, {"title": q, "media_type": kind or None}, 8)
+        groups = await _search_groups({"title": q, "media_type": kind or None}, 8)
         out = []
         for g in groups:
             out.append({
