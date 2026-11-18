@@ -3554,10 +3554,29 @@ async def main() -> None:
             token = session_obj.token
             duration = None
         else:
+            from . import trackprobe as _trackprobe
+
+            quality = "copy"
+            cached_tracks = _trackprobe.get_cached(media_key) or {}
+            codecs = {(t.get("codec") or "").lower() for t in (cached_tracks.get("audio") or [])}
+            friendly = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le"}
+            if codecs and not (codecs & friendly):
+                quality = "downgrade"
+                logger.info("player cast: audio %s needs a transcode for %s", sorted(codecs), media_key)
+                if audio < 0:
+                    first_audio = (cached_tracks.get("audio") or [{}])[0].get("index")
+                    if isinstance(first_audio, int):
+                        audio = first_audio
             stream = await api_app_stream(
-                media_key, start_position, "cache", "copy", 0, "", 1, "",
+                media_key, start_position, "cache", quality, 0, "", 1, "",
                 audio, sub,
             )
+            session_obj = proxy.get_session(stream.get("token") or "")
+            if session_obj is not None and not session_obj.is_live:
+                try:
+                    await asyncio.wait_for(session_obj.ready.wait(), timeout=25)
+                except asyncio.TimeoutError:
+                    logger.warning("player cast: session %s not primed, sending anyway", session_obj.token)
             if not stream.get("ok"):
                 return stream
             url = stream.get("lan_url") or stream.get("public_url")
@@ -3738,6 +3757,8 @@ async def main() -> None:
         if act is not None:
             st = players.get_status(act["player_id"]) or {}
             state = str(st.get("state") or "").lower()
+            if state in ("stopped", "error"):
+                return {"playing": False}
             position = st.get("position")
             duration = st.get("duration")
             pos = None

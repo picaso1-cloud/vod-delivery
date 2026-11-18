@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,6 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -38,8 +42,20 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -79,6 +95,12 @@ class TvPlayerActivity : ComponentActivity() {
     private var statusText = mutableStateOf("")
     private var mediaKey = mutableStateOf("")
     private var sessionToken = mutableStateOf("")
+    private var overlayVisible = mutableStateOf(true)
+    private var overlayTick = mutableIntStateOf(0)
+    private var panelOpen = mutableStateOf(false)
+    private var panelIndex = mutableIntStateOf(0)
+    private var audioChoices = mutableStateOf<List<TrackChoice>>(emptyList())
+    private var textChoices = mutableStateOf<List<TrackChoice>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -197,6 +219,10 @@ class TvPlayerActivity : ComponentActivity() {
                 }
             }
 
+            override fun onTracksChanged(tracks: Tracks) {
+                rebuildTracks(tracks)
+            }
+
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 AppLog.w("TVPLAYER", "player error: ${error.errorCodeName} ${error.message}")
                 connection.value = "player error: ${error.errorCodeName}"
@@ -245,6 +271,51 @@ class TvPlayerActivity : ComponentActivity() {
         socket?.send(payload)
     }
 
+    private fun rebuildTracks(tracks: Tracks) {
+        val audio = mutableListOf<TrackChoice>()
+        val text = mutableListOf<TrackChoice>()
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO && group.type != C.TRACK_TYPE_TEXT) continue
+            for (index in 0 until group.length) {
+                val format = group.getTrackFormat(index)
+                val label = buildString {
+                    append((format.language ?: "und").uppercase())
+                    if (!format.label.isNullOrBlank()) append(" · ${format.label}")
+                    if (group.type == C.TRACK_TYPE_AUDIO && format.channelCount > 2) {
+                        append(" · ${format.channelCount}ch")
+                    }
+                }
+                val choice = TrackChoice(group, index, label, group.type)
+                if (group.type == C.TRACK_TYPE_AUDIO) audio += choice else text += choice
+            }
+        }
+        audioChoices.value = audio
+        textChoices.value = text
+    }
+
+    private fun trackChoices(): List<TrackChoice> =
+        audioChoices.value + TrackChoice(null, -1, "Subtitles off", C.TRACK_TYPE_TEXT) + textChoices.value
+
+    private fun applyTrack(choice: TrackChoice) {
+        val player = exo ?: return
+        val builder = player.trackSelectionParameters.buildUpon()
+        if (choice.group == null) {
+            builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+        } else {
+            val type = choice.group.type
+            if (type == C.TRACK_TYPE_TEXT) builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            builder.clearOverridesOfType(type)
+            builder.addOverride(TrackSelectionOverride(choice.group.mediaTrackGroup, choice.trackIndex))
+        }
+        player.trackSelectionParameters = builder.build()
+        AppLog.i("TVPLAYER", "track selected: ${choice.label}")
+    }
+
+    private fun showOverlay() {
+        overlayVisible.value = true
+        overlayTick.intValue += 1
+    }
+
     private fun stopPlayback(silent: Boolean = false) {
         if (exo != null) {
             if (!silent) sendStatus("stopped")
@@ -254,6 +325,9 @@ class TvPlayerActivity : ComponentActivity() {
         statusJob?.cancel()
         statusJob = null
         playing.value = false
+        panelOpen.value = false
+        audioChoices.value = emptyList()
+        textChoices.value = emptyList()
         if (!silent) {
             title.value = ""
             mediaKey.value = ""
@@ -275,16 +349,48 @@ class TvPlayerActivity : ComponentActivity() {
 
     @Composable
     private fun TvRoot() {
+        val focusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { focusRequester.requestFocus() }
         Box(
             Modifier
                 .fillMaxSize()
                 .background(Color(0xFF08080B))
+                .focusRequester(focusRequester)
+                .focusable()
                 .onPreviewKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    if (panelOpen.value) {
+                        val last = trackChoices().lastIndex
+                        return@onPreviewKeyEvent when (event.key) {
+                            Key.DirectionDown -> {
+                                panelIndex.intValue = (panelIndex.intValue + 1).coerceAtMost(last)
+                                showOverlay(); true
+                            }
+                            Key.DirectionUp -> {
+                                panelIndex.intValue = (panelIndex.intValue - 1).coerceAtLeast(0)
+                                showOverlay(); true
+                            }
+                            Key.DirectionCenter -> {
+                                trackChoices().getOrNull(panelIndex.intValue)?.let { applyTrack(it) }
+                                panelOpen.value = false
+                                showOverlay(); true
+                            }
+                            Key.Back -> { panelOpen.value = false; showOverlay(); true }
+                            else -> false
+                        }
+                    }
                     when (event.key) {
-                        Key.DirectionCenter -> { toggle(); true }
-                        Key.DirectionLeft -> { seekBy(-30); true }
-                        Key.DirectionRight -> { seekBy(30); true }
+                        Key.DirectionCenter -> { toggle(); showOverlay(); true }
+                        Key.DirectionLeft -> { seekBy(-30); showOverlay(); true }
+                        Key.DirectionRight -> { seekBy(30); showOverlay(); true }
+                        Key.DirectionDown -> {
+                            if (playing.value) {
+                                panelOpen.value = true
+                                panelIndex.intValue = 0
+                                showOverlay()
+                                true
+                            } else false
+                        }
                         Key.Back -> {
                             if (playing.value) {
                                 stopPlayback()
@@ -396,23 +502,95 @@ class TvPlayerActivity : ComponentActivity() {
                     PlayerView(context).apply {
                         useController = false
                         player = exo
+                        isFocusable = false
+                        isFocusableInTouchMode = false
                     }
                 },
                 update = { view -> view.player = exo },
             )
-            Column(
-                Modifier.align(Alignment.TopStart).padding(24.dp),
-            ) {
+            LaunchedEffect(overlayTick.intValue, panelOpen.value) {
+                overlayVisible.value = true
+                if (panelOpen.value) return@LaunchedEffect
+                delay(4000)
+                overlayVisible.value = false
+            }
+            if (overlayVisible.value) {
+                Column(
+                    Modifier.align(Alignment.TopStart).padding(24.dp),
+                ) {
+                    Text(
+                        title.value,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                    )
+                    Text(
+                        "OK play/pause · ◀ ▶ ±30s · ▼ tracks · Back stop",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xB3FFFFFF),
+                    )
+                }
+            }
+            if (panelOpen.value) TrackPanel()
+        }
+    }
+
+    @Composable
+    private fun BoxScope.TrackPanel() {
+        val choices = trackChoices()
+        Surface(
+            color = Color(0xF2101014),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 32.dp)
+                .widthIn(max = 560.dp),
+        ) {
+            Column(Modifier.padding(vertical = 12.dp)) {
                 Text(
-                    title.value,
+                    "Tracks",
                     style = MaterialTheme.typography.titleMedium,
                     color = Color.White,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 )
-                Text(
-                    "D-pad: OK play/pause · ◀ ▶ ±30s · Back stop",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xB3FFFFFF),
-                )
+                LazyColumn {
+                    itemsIndexed(choices) { index, choice ->
+                        val selected = if (choice.group == null) {
+                            textChoices.value.none { it.group?.isTrackSelected(it.trackIndex) == true }
+                        } else {
+                            choice.group.isTrackSelected(choice.trackIndex)
+                        }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 3.dp)
+                                .background(
+                                    if (index == panelIndex.intValue) Color(0xFF2A2A33) else Color.Transparent,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .clickable {
+                                    panelIndex.intValue = index
+                                    applyTrack(choice)
+                                    panelOpen.value = false
+                                    showOverlay()
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                if (selected) "●" else "○",
+                                color = if (selected) Color(0xFF4CD964) else Color(0x66FFFFFF),
+                                modifier = Modifier.width(24.dp),
+                            )
+                            Text(
+                                choice.label,
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -424,6 +602,13 @@ class TvPlayerActivity : ComponentActivity() {
         super.onDestroy()
     }
 }
+
+data class TrackChoice(
+    val group: Tracks.Group?,
+    val trackIndex: Int,
+    val label: String,
+    val type: Int,
+)
 
 private class PlayerSocket(
     private val url: String,

@@ -832,6 +832,11 @@ async def app_player_ws(websocket: WebSocket, player_id: str = "", token: str = 
             if message.get("type") != "status":
                 continue
             players.set_status(player_id, message)
+            if str(message.get("state") or "").lower() in ("stopped", "error"):
+                active = players.active()
+                if active and active.get("player_id") == player_id:
+                    players.forget(active.get("token") or "")
+                    players.clear_active()
             now = time.time()
             media_key = str(message.get("media_key") or "")
             position = float(message.get("position") or 0)

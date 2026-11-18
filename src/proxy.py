@@ -360,7 +360,7 @@ def _decoder_codec_args(session: ProxySession, transcode: bool) -> list:
     return [
         "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "aac", "-b:a", "192k", "-ac", "2",
     ]
 
 
@@ -659,7 +659,7 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
             codec_args = [
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                 "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black",
-                "-c:a", "aac", "-b:a", "192k",
+                "-c:a", "aac", "-b:a", "192k", "-ac", "2",
             ]
         else:
             codec_args = ["-c", "copy"]
@@ -880,7 +880,7 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
     transcode = session.mode in ("downgrade", "cache_downgrade")
     if transcode:
         vcodec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"]
-        acodec = ["-c:a", "aac", "-b:a", "192k"]
+        acodec = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
     else:
         vcodec = ["-c:v", "copy"]
         acodec = ["-c:a", "copy"]

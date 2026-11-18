@@ -132,6 +132,17 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.8 — 2026-11-18
+
+- **TV player refinements**: the title overlay auto-hides after 4 s and returns
+  on any key press; a Tracks panel (▼) lists audio tracks (language · codec ·
+  channels) and subtitles with "Subtitles off", driven entirely by the D-pad
+  (▲▼ move, OK select, Back close).
+- Buffers kept small for 1 GB boxes; audio downmix to stereo AAC on the
+  transcode path (5.1 sources failed on older Allwinner chipsets).
+- The release publishes the same APK twice: `vodcast-v0.3.8.apk` (phone) and
+  `vodcast-tv-v0.3.8.apk` (TV entry point).
+
 ### 0.3.7 — 2026-11-18
 
 - **TV player mode** (same APK, `LEANBACK_LAUNCHER`): a full-screen ExoPlayer
