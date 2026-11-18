@@ -214,6 +214,7 @@ async def await_provider_slot(url: str, budget: float = PROVIDER_SLOT_BUDGET_S) 
                     if resp.status_code < 400:
                         if attempt > 1:
                             logger.info("provider slot released after %d probes", attempt)
+                        await asyncio.sleep(0.8)
                         return True
                     status = resp.status_code
         except Exception as exc:
