@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -567,13 +567,8 @@ def _app_auth(request: Request) -> None:
     host = request.client.host if request.client else ""
     if host in ("127.0.0.1", "::1"):
         return
-    from . import urlsign
-
-    expected = urlsign.app_token()
     header = request.headers.get("authorization", "")
     token = header[7:].strip() if header.lower().startswith("bearer ") else ""
-    if expected and token and secrets.compare_digest(token, expected):
-        return
     if token:
         conn = store.connect()
         try:
@@ -681,6 +676,94 @@ async def app_whoami():
 @app.get("/api/app/config", dependencies=[Depends(_app_auth)])
 async def app_config():
     return call_bridge("app_config")
+
+
+DIST_DIR = Path(__file__).resolve().parent.parent / "android" / "dist"
+GRADLE_FILE = Path(__file__).resolve().parent.parent / "android" / "app" / "build.gradle.kts"
+
+
+_GH_ATTEMPT = {"at": 0.0, "ok": False}
+
+
+def _fetch_apk_from_github(version_name: str) -> bool:
+    import shutil
+    import subprocess
+
+    now = time.time()
+    if now - _GH_ATTEMPT["at"] < 300:
+        return _GH_ATTEMPT["ok"]
+    _GH_ATTEMPT["at"] = now
+    _GH_ATTEMPT["ok"] = False
+    if shutil.which("gh") is None:
+        return False
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["gh", "release", "download", f"v{version_name}", "--pattern", "*.apk", "--dir", str(DIST_DIR), "--clobber"],
+            capture_output=True, timeout=90,
+        )
+    except Exception:
+        logger.warning("gh release download failed", exc_info=True)
+        return False
+    target = DIST_DIR / f"vodcast-v{version_name}.apk"
+    _GH_ATTEMPT["ok"] = result.returncode == 0 and target.exists()
+    if _GH_ATTEMPT["ok"]:
+        logger.info("ota: fetched %s from GitHub releases", target.name)
+    return _GH_ATTEMPT["ok"]
+
+
+def _release_info() -> dict:
+    import re
+
+    info = {"version_code": 0, "version_name": "", "apk": None, "size": 0, "notes": ""}
+    try:
+        text = GRADLE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return info
+    code = re.search(r"versionCode\s*=\s*(\d+)", text)
+    name = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+    if code:
+        info["version_code"] = int(code.group(1))
+    if not name:
+        return info
+    info["version_name"] = name.group(1)
+    apk = DIST_DIR / f"vodcast-v{info['version_name']}.apk"
+    if not apk.exists():
+        _fetch_apk_from_github(info["version_name"])
+    if apk.exists():
+        info["apk"] = apk
+        info["size"] = apk.stat().st_size
+    notes_dir = Path(__file__).resolve().parent.parent / "android" / "release-notes"
+    for notes in (notes_dir / f"v{info['version_name']}.md", DIST_DIR / f"v{info['version_name']}.md"):
+        if notes.exists():
+            try:
+                info["notes"] = notes.read_text(encoding="utf-8").strip()[:1500]
+                break
+            except OSError:
+                continue
+    return info
+
+
+@app.get("/api/app/update", dependencies=[Depends(_app_auth)])
+async def app_update(current: int = 0):
+    info = await asyncio.to_thread(_release_info)
+    return {
+        "ok": True,
+        "version_name": info["version_name"],
+        "version_code": info["version_code"],
+        "size": info["size"],
+        "notes": info["notes"],
+        "available": bool(info["apk"]) and info["version_code"] > current,
+    }
+
+
+@app.get("/api/app/update/apk", dependencies=[Depends(_app_auth)])
+async def app_update_apk():
+    info = await asyncio.to_thread(_release_info)
+    apk = info["apk"]
+    if apk is None or not Path(apk).exists():
+        raise HTTPException(status_code=404, detail="no apk on the server")
+    return FileResponse(str(apk), media_type="application/vnd.android.package-archive", filename=apk.name)
 
 
 @app.get("/api/app/search", dependencies=[Depends(_app_auth)])

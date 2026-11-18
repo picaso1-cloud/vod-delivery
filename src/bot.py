@@ -1368,7 +1368,8 @@ async def main() -> None:
             "🔑 <b>New app token</b>\n"
             f"<code>{token}</code>\n\n"
             f"Label: <b>{label[:80]}</b>\n"
-            "Paste it in the Android app's server settings, or pair the device from the App access page."
+            "Paste it in the Android app's server settings, or pair the device from the App access page.\n"
+            "Existing devices keep their tokens until you revoke them (/tokens)."
         )
 
     @dp.message(Command("tokens"))

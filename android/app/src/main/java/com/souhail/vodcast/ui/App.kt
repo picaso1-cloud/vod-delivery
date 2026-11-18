@@ -502,38 +502,51 @@ fun VodApp(settings: Settings) {
                     initialToken = settings.token,
                 ) { lan, pub, token ->
                     scope.launch {
+                        val lanCandidates = lan.split(',', ';', ' ')
+                            .map { it.trim() }
+                            .filter { it.isNotBlank() }
                         var chosen: Api? = null
+                        var chosenUrl = ""
                         var lanOk = false
-                        try {
-                            val candidate = Api(lan, token)
-                            candidate.config()
-                            chosen = candidate
-                            lanOk = true
-                        } catch (_: Exception) {
+                        for (candidateUrl in lanCandidates) {
+                            try {
+                                val candidate = Api(candidateUrl, token)
+                                candidate.config()
+                                chosen = candidate
+                                chosenUrl = candidateUrl
+                                lanOk = true
+                                AppLog.i("CONNECT", "lan ok: $candidateUrl")
+                                break
+                            } catch (e: Exception) {
+                                AppLog.w("CONNECT", "lan failed: $candidateUrl (${e.message})")
+                            }
                         }
                         if (chosen == null && pub.isNotBlank()) {
                             try {
                                 val candidate = Api(pub, token)
                                 candidate.config()
                                 chosen = candidate
-                            } catch (_: Exception) {
+                                chosenUrl = pub
+                                AppLog.i("CONNECT", "public ok: $pub")
+                            } catch (e: Exception) {
+                                AppLog.w("CONNECT", "public failed: $pub (${e.message})")
                             }
                         }
                         if (chosen == null) {
-                            AppLog.w("CONNECT", "both URLs unreachable")
-                            toast = "Cannot reach either URL — check the server and token"
+                            AppLog.w("CONNECT", "${lanCandidates.size} LAN + public URLs unreachable")
+                            toast = "Cannot reach the server — check Wi-Fi and the token"
                             return@launch
                         }
                         settings.lanUrl = lan
                         settings.publicUrl = pub
-                        settings.baseUrl = if (lanOk) lan else pub
+                        settings.baseUrl = chosenUrl
                         settings.token = token
                         settings.usingLan = lanOk
                         AppLog.setRemote(settings.baseUrl, token)
                         api = chosen
                         usingLan = lanOk
                         screen = Screen.Discover
-                        AppLog.action("connect", "route=${if (lanOk) "lan" else "public"}")
+                        AppLog.action("connect", "route=${if (lanOk) "lan" else "public"} url=$chosenUrl")
                         toast = if (lanOk) "Connected over LAN" else "Connected over public URL"
                     }
                 }
@@ -692,6 +705,7 @@ fun VodApp(settings: Settings) {
 
                 Screen.Logs -> LogsScreen()
             }
+            api?.let { client -> UpdateGate(client, settings, appVersionCode(context)) }
         }
     }
 
@@ -785,7 +799,8 @@ private fun SetupScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
-            value = lan, onValueChange = { lan = it }, label = { Text("LAN URL") },
+            value = lan, onValueChange = { lan = it },
+            label = { Text("LAN URL (comma-separated for several networks)") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(

@@ -235,13 +235,29 @@ CREATE TABLE IF NOT EXISTS watchlist (
 """
 
 
+_legacy_token_adopted = False
+
+
 def connect() -> sqlite3.Connection:
+    global _legacy_token_adopted
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    if not _legacy_token_adopted:
+        try:
+            legacy = get_setting(conn, "app_token")
+            if legacy:
+                conn.execute(
+                    "INSERT OR IGNORE INTO app_tokens(token, label, created_at) VALUES(?,?,?)",
+                    (legacy, "legacy shared token", _now()),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            pass
+        _legacy_token_adopted = True
     for table in ("movies", "episodes"):
         columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if "subs_lang" not in columns and table == "movies":

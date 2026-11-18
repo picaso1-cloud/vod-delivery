@@ -193,6 +193,16 @@ data class SubTrack(
 )
 
 @Serializable
+data class UpdateInfo(
+    val ok: Boolean = false,
+    val version_name: String = "",
+    val version_code: Int = 0,
+    val size: Long = 0,
+    val notes: String = "",
+    val available: Boolean = false,
+)
+
+@Serializable
 data class TracksResponse(
     val ok: Boolean = false,
     val media_key: String = "",

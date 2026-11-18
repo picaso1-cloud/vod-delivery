@@ -132,6 +132,24 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.4 — 2026-11-18
+
+- **In-app updates (OTA)**: the client asks the server for the newest build on
+  launch (max once per 6h), shows the release notes, downloads the APK with
+  progress and opens the installer. `GET /api/app/update` returns
+  version/code/size/notes; `GET /api/app/update/apk` serves the file. The panel
+  reads `android/dist/vodcast-v<version>.apk` (with the version taken from
+  `build.gradle.kts`) and falls back to `gh release download` when the file is
+  missing, so a fresh server heals itself from GitHub releases. Notes come from
+  `android/release-notes/v<version>.md`. "Later" skips that version.
+- **Several LAN URLs**: the setup field accepts a comma-separated list
+  (`http://192.168.1.240:8095, http://192.168.31.106:8095`); the app tries each
+  in order, then the public URL. Fixes "won't connect" when the phone is on the
+  other home subnet.
+- **Tokens are additive**: minting a token never disables existing devices. The
+  legacy shared token is migrated into the token table on boot so it now shows
+  in *App access* and can be revoked like any other.
+
 ### 0.3.3 — 2026-11-17
 
 - **Series language picker**: the detail screen lists every stream of a series

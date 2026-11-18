@@ -45,6 +45,14 @@ class Settings(context: Context) {
         get() = prefs.getString("session_tv", "") ?: ""
         set(value) = prefs.edit().putString("session_tv", value).apply()
 
+    var lastUpdateCheck: Long
+        get() = prefs.getLong("update_check", 0L)
+        set(value) = prefs.edit().putLong("update_check", value).apply()
+
+    var skippedVersion: Int
+        get() = prefs.getInt("update_skip", 0)
+        set(value) = prefs.edit().putInt("update_skip", value).apply()
+
     fun clearSession() {
         prefs.edit()
             .remove("session_token")

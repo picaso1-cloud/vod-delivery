@@ -118,6 +118,38 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun sessions(): SessionsResponse = json.decodeFromString(exec("api/app/sessions"))
 
+    suspend fun update(current: Int): UpdateInfo =
+        json.decodeFromString(exec("api/app/update", mapOf("current" to current.toString())))
+
+    suspend fun downloadUpdate(dest: java.io.File, onProgress: (Float) -> Unit = {}) =
+        withContext(Dispatchers.IO) {
+            val httpUrl = url("api/app/update/apk", emptyMap())
+            val req = Request.Builder()
+                .url(httpUrl)
+                .header("Authorization", "Bearer $token")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("HTTP ${resp.code} downloading update")
+                val body = resp.body ?: error("empty update body")
+                val total = body.contentLength()
+                dest.parentFile?.mkdirs()
+                body.byteStream().use { input ->
+                    dest.outputStream().use { out ->
+                        val buffer = ByteArray(128 * 1024)
+                        var done = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            out.write(buffer, 0, read)
+                            done += read
+                            if (total > 0) onProgress(done.toFloat() / total)
+                        }
+                    }
+                }
+            }
+            dest.length()
+        }
+
     suspend fun tracks(mediaKey: String, force: Boolean = false): TracksResponse =
         json.decodeFromString(
             exec("api/app/tracks", mapOf("media_key" to mediaKey, "force" to if (force) "1" else "0"))

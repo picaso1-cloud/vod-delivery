@@ -156,6 +156,19 @@ credential.
 | POST | `/api/app/tvs/ban` | `mac`, `label` | `{ok, mac}` — MAC ban list, hidden from every TV surface |
 | POST | `/api/app/tvs/unban` | `mac` | `{ok, mac}` |
 
+## Updates (OTA)
+
+| Method | Path | Params | Returns |
+|---|---|---|---|
+| GET | `/api/app/update` | `current=<versionCode>` | `{ok, version_name, version_code, size, notes, available}` |
+| GET | `/api/app/update/apk` | – | the newest APK (`application/vnd.android.package-archive`) |
+
+The panel serves `android/dist/vodcast-v<version>.apk`, where the version is read
+from `android/app/build.gradle.kts`. If the file is missing it tries
+`gh release download v<version>` (5-minute negative cache). Release notes are
+read from `android/release-notes/v<version>.md`. The client downloads with its
+token header, so the endpoint works over LAN and through the public base.
+
 ## Tracks (audio / subtitles)
 
 | Method | Path | Params | Returns |
