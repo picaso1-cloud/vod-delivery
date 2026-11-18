@@ -3003,7 +3003,7 @@ async def main() -> None:
     def _group_json(g: Group) -> dict:
         rating = max((v.rating or 0) for v in g.variants) if g.variants else 0
         return {
-            "kind": g.kind, "title": g.title, "year": g.year,
+            "kind": g.kind, "title": g.title, "native_title": g.native_title or None, "year": g.year,
             "score": round(g.best_score, 2), "rating": round(float(rating), 1),
             "poster": g.poster, "plot": g.plot,
             "variants": [

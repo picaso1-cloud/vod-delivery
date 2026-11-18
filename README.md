@@ -132,6 +132,25 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.5 — 2026-11-18
+
+- **Arabic-aware search**: `normalize_arabic` (أ/إ/آ→ا, ة→ه, ى→ي, tatweel and
+  diacritics) plus definite-article stripping for both the index and query
+  tokens, so `القصة الكاملة` also matches `قصه كامله`.
+- **Native titles are indexed**: `search_fts` now stores
+  `title + native_title + article-stripped variants`; before, Arabic names of
+  English-titled shows were invisible to name search. Results and the app's
+  detail/cards show the native title under the English one (`native_title` in
+  `/api/app/discover`).
+- **Parser fix**: provider tags (`V.SHAHID`, `V.FORJA`, …) are skipped and only
+  the first non-title/non-year part is kept as `native_title`; 256 existing
+  series were repaired in place.
+- **Index health**: the FTS is rebuilt automatically when its row count differs
+  from the catalog (2,763 titles were missing), and the bm25 contribution is
+  capped at 40 so plot hits can't outrank a real title match.
+- Verified: `القصة الكاملة` returns all three anthology entries first;
+  `جريمة في الزمالك`, `بني مزار` and `لعبة جهنم` each resolve to the right show.
+
 ### 0.3.4 — 2026-11-18
 
 - **In-app updates (OTA)**: the client asks the server for the newest build on

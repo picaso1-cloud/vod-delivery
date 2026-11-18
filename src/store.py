@@ -1,8 +1,11 @@
 import json
+import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger("vod-delivery")
 
 DB_PATH = Path("data/vod.db")
 
@@ -236,16 +239,27 @@ CREATE TABLE IF NOT EXISTS watchlist (
 
 
 _legacy_token_adopted = False
+_fts_checked = False
 
 
 def connect() -> sqlite3.Connection:
-    global _legacy_token_adopted
+    global _legacy_token_adopted, _fts_checked
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    if not _fts_checked:
+        try:
+            total = conn.execute("SELECT (SELECT COUNT(*) FROM movies) + (SELECT COUNT(*) FROM series)").fetchone()[0]
+            indexed = conn.execute("SELECT COUNT(*) FROM search_fts").fetchone()[0]
+            if indexed != total:
+                logger.info("search index out of date (%d of %d) — rebuilding", indexed, total)
+                rebuild_search_fts(conn)
+        except sqlite3.Error:
+            pass
+        _fts_checked = True
     if not _legacy_token_adopted:
         try:
             legacy = get_setting(conn, "app_token")
@@ -661,15 +675,59 @@ def remove_queue_item(conn: sqlite3.Connection, media_key: str) -> None:
     conn.commit()
 
 
+_AR_TRANSLATE = str.maketrans({
+    "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا",
+    "ة": "ه", "ى": "ي", "ؤ": "و", "ئ": "ي",
+    "ـ": "", "\u064b": "", "\u064c": "", "\u064d": "",
+    "\u064e": "", "\u064f": "", "\u0650": "", "\u0651": "",
+    "\u0652": "", "\u0670": "",
+})
+
+
+def normalize_arabic(text: str) -> str:
+    return (text or "").translate(_AR_TRANSLATE)
+
+
+def strip_arabic_article(word: str) -> str:
+    for prefix in ("وال", "بال", "كال", "فال", "لل", "ال"):
+        if word.startswith(prefix) and len(word) > len(prefix) + 1:
+            return word[len(prefix):]
+    return word
+
+
+def search_variants(text: str) -> str:
+    norm = normalize_arabic(text or "")
+    return " ".join(strip_arabic_article(w) for w in norm.split())
+
+
+def _search_text(title, native) -> str:
+    parts = [title or "", native or ""]
+    combined = " ".join(p for p in parts if p)
+    parts.append(search_variants(combined))
+    seen = []
+    for part in parts:
+        for word in part.split():
+            if word not in seen:
+                seen.append(word)
+    return " ".join(seen)
+
+
 def rebuild_search_fts(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM search_fts")
-    conn.execute(
-        "INSERT INTO search_fts(title, plot, genre, kind, ref_id) "
-        "SELECT title, '', '', 'movie', stream_id FROM movies"
+    movies = conn.execute("SELECT stream_id, title FROM movies").fetchall()
+    conn.executemany(
+        "INSERT INTO search_fts(title, plot, genre, kind, ref_id) VALUES(?,?,?,?,?)",
+        [(_search_text(r["title"], None), "", "", "movie", r["stream_id"]) for r in movies],
     )
-    conn.execute(
-        "INSERT INTO search_fts(title, plot, genre, kind, ref_id) "
-        "SELECT title, COALESCE(plot,''), COALESCE(genre,''), 'series', series_id FROM series"
+    series = conn.execute(
+        "SELECT series_id, title, native_title, plot, genre FROM series"
+    ).fetchall()
+    conn.executemany(
+        "INSERT INTO search_fts(title, plot, genre, kind, ref_id) VALUES(?,?,?,?,?)",
+        [
+            (_search_text(r["title"], r["native_title"]), r["plot"] or "", r["genre"] or "", "series", r["series_id"])
+            for r in series
+        ],
     )
     conn.commit()
 

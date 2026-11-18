@@ -1358,6 +1358,16 @@ private fun GroupRow(group: MediaGroup, onClick: () -> Unit) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            val native = group.native_title?.takeIf { it.isNotBlank() && !it.equals(group.title, ignoreCase = true) }
+            if (native != null) {
+                Text(
+                    native,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 listOfNotNull(
                     group.year?.toString(),
@@ -1515,6 +1525,16 @@ private fun DetailScreen(
                 )
                 Column(Modifier.align(Alignment.BottomStart).padding(16.dp)) {
                     Text(group.title, style = MaterialTheme.typography.headlineMedium)
+                    val native = group.native_title?.takeIf {
+                        it.isNotBlank() && !it.equals(group.title, ignoreCase = true)
+                    }
+                    if (native != null) {
+                        Text(
+                            native,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Row(
                         Modifier.padding(top = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,

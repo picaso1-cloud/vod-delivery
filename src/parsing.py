@@ -45,6 +45,9 @@ def parse_movie_name(raw: str) -> dict:
     return {"raw": raw, "lang": lang, "subs_lang": subs_lang, "title": _clean(title), "year": year}
 
 
+_PROVIDER_TAG_RE = re.compile(r"^[A-Za-z]{1,4}\.[A-Za-z0-9]{2,}$")
+
+
 def parse_series_name(raw: str) -> dict:
     name = raw.strip().strip("|").strip()
     parts = [p.strip() for p in name.split("|") if p.strip()]
@@ -58,12 +61,14 @@ def parse_series_name(raw: str) -> dict:
     for part in parts:
         if part.isdigit() and len(part) == 4:
             year = int(part)
+        elif _PROVIDER_TAG_RE.match(part):
+            continue
         elif _looks_like_lang(part) and (lang is None or part.upper() == lang):
             if lang is None:
                 lang = part.upper()
         elif romanized is None:
             romanized = part
-        else:
+        elif native is None:
             native = part
     if romanized is None:
         romanized = raw

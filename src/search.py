@@ -155,7 +155,9 @@ def search(query: dict, k: int = 6, depth: int = 80) -> list[Group]:
 STOP_WORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "about",
     "from", "by", "movie", "movies", "film", "films", "series", "show", "shows", "tv",
-    "episode", "episodes", "season", "seasons", "watch",
+    "episode", "episodes", "season", "seasons",
+    "في", "من", "على", "عن", "الي", "الى", "مع", "هذا", "هذه", "ذلك", "التي", "الذي",
+    "مسلسل", "مسلسلات", "فيلم", "افلام", "حلقة", "حلقات", "watch",
     "want", "watching", "something", "some", "like", "best", "good", "great", "top",
     "me", "i", "we", "you", "my", "is", "are", "was", "were", "be", "that", "this",
     "it", "its", "into", "find", "looking", "search", "suggestion", "suggestions",
@@ -182,7 +184,8 @@ SYNONYMS = {
 def _fold(text: str) -> str:
     text = unicodedata.normalize("NFKD", text.lower())
     text = "".join(c for c in text if not unicodedata.combining(c))
-    return re.sub(r"[\u064b-\u065f\u0670\u0640]", "", text)
+    text = re.sub(r"[\u064b-\u065f\u0670\u0640]", "", text)
+    return store.normalize_arabic(text)
 
 
 def query_has_signal(text: str) -> bool:
@@ -199,6 +202,9 @@ def _query_tokens(text: str) -> list[str]:
         out.append(token)
         if len(token) > 4 and token.endswith("s"):
             out.append(token[:-1])
+        stripped = store.strip_arabic_article(token)
+        if stripped != token:
+            out.append(stripped)
         out.extend(SYNONYMS.get(token, []))
     seen: set[str] = set()
     unique: list[str] = []
@@ -280,7 +286,7 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
     best: dict[tuple, float] = {}
 
     def add_row(kind, ref_id, title, year, poster, rating, row_lang, ext, subs, category, plot,
-                fts_rank=0.0, bonus=0.0):
+                fts_rank=0.0, bonus=0.0, native=""):
         if not year:
             year_match = re.search(r"\((\d{4})\)\s*$", title or "")
             if year_match:
@@ -288,24 +294,30 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
         if not _row_allowed(kind, year, rating, row_lang, plot if kind == "series" else "",
                             media_type, year_from, year_to, rating_min, lang, genre):
             return
-        lowered = (title or "").lower()
+        lowered = store.normalize_arabic((title or "").lower())
+        native_l = store.normalize_arabic((native or "").lower())
         core = _title_core(lowered)
-        score = max(0.0, -float(fts_rank)) * 0.05
-        if lowered == phrase or core == phrase:
+        native_core = _title_core(native_l)
+        score = min(40.0, max(0.0, -float(fts_rank)) * 0.05)
+        if lowered == phrase or core == phrase or (native_l and (native_l == phrase or native_core == phrase)):
             score += 120
-        elif phrase and phrase in lowered:
+        elif phrase and (phrase in lowered or (native_l and phrase in native_l)):
             score += 60
         score += bonus
+        plot_l = store.normalize_arabic((plot or "").lower())
+        in_title = [t for t in tokens if t in lowered or (native_l and t in native_l)]
         for token in tokens:
-            if token in lowered:
+            if token in lowered or (native_l and token in native_l):
                 score += 10
-            elif kind == "series" and token in (plot or "").lower():
+            elif kind == "series" and token in plot_l:
                 score += 3
+        if kind == "series" and len(tokens) >= 2 and not in_title and all(t in plot_l for t in tokens):
+            score += 12
         score += float(rating or 0) * 2
         key = (kind, normalize_for_grouping(title or ""), year)
         if key not in groups:
             groups[key] = Group(
-                kind, key[1], title or "", "", year, poster or "",
+                kind, key[1], title or "", native or "", year, poster or "",
                 "" if kind == "movie" else (plot or "")[:400], score,
             )
             best[key] = score
@@ -350,7 +362,7 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
             if series_ids:
                 for chunk in _chunks(series_ids, 800):
                     q = (
-                        "SELECT series_id, title, year, poster, rating, lang, plot, genre, category_id "
+                        "SELECT series_id, title, native_title, year, poster, rating, lang, plot, genre, category_id "
                         f"FROM series WHERE series_id IN ({','.join('?' * len(chunk))})"
                     )
                     for row in conn.execute(q, chunk):
@@ -358,6 +370,7 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
                             "series", row["series_id"], row["title"], row["year"], row["poster"],
                             row["rating"], row["lang"], "mkv", None, row["category_id"],
                             row["plot"] or "", ranks.get(("series", row["series_id"]), 0.0),
+                            native=row["native_title"] or "",
                         )
 
         if not groups:
@@ -381,12 +394,13 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
             for token in tokens:
                 params2 += [f"%{token}%"] * 4
             for row in conn.execute(
-                f"SELECT series_id, title, year, poster, rating, lang, plot, genre, category_id "
+                f"SELECT series_id, title, native_title, year, poster, rating, lang, plot, genre, category_id "
                 f"FROM series WHERE {like2} ORDER BY rating DESC LIMIT 400", params2
             ):
                 add_row(
                     "series", row["series_id"], row["title"], row["year"], row["poster"],
                     row["rating"], row["lang"], "mkv", None, row["category_id"], row["plot"] or "",
+                    native=row["native_title"] or "",
                 )
 
         if phrase:
@@ -405,14 +419,15 @@ def keyword_search(text: str, media_type: str | None = None, k: int = 12,
                         row["category_id"], "", bonus=bonus,
                     )
                 for row in conn.execute(
-                    "SELECT series_id, title, year, poster, rating, lang, plot, genre, category_id "
-                    "FROM series WHERE lower(title) = ? OR lower(title) LIKE ? LIMIT 60",
-                    (cand, year_suffix),
+                    "SELECT series_id, title, native_title, year, poster, rating, lang, plot, genre, category_id "
+                    "FROM series WHERE lower(title) = ? OR lower(title) LIKE ? "
+                    "OR lower(native_title) = ? OR lower(native_title) LIKE ? LIMIT 60",
+                    (cand, year_suffix, cand, year_suffix),
                 ):
                     add_row(
                         "series", row["series_id"], row["title"], row["year"], row["poster"],
                         row["rating"], row["lang"], "mkv", None, row["category_id"],
-                        row["plot"] or "", bonus=bonus,
+                        row["plot"] or "", bonus=bonus, native=row["native_title"] or "",
                     )
     finally:
         conn.close()

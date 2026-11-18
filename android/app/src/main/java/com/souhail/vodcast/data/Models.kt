@@ -14,6 +14,7 @@ data class MediaVariant(
 data class MediaGroup(
     val kind: String = "movie",
     val title: String = "",
+    val native_title: String? = null,
     val year: Int? = null,
     val score: Double = 0.0,
     val poster: String? = null,
