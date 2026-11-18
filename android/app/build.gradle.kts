@@ -13,8 +13,8 @@ android {
         applicationId = "com.souhail.vodcast"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.3.11"
+        versionCode = 17
+        versionName = "0.3.12"
     }
 
     buildTypes {

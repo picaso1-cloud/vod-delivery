@@ -132,6 +132,13 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.12 — 2026-11-18
+
+- **Aspect control on the TV player**: press **▲** while playing to cycle
+  `Fit → Fill → Zoom`. The choice is stored per TV, the overlay shows the
+  current mode, and the `PlayerView` surface is forced to match-parent so a
+  resize no longer renders as a small box in the middle.
+
 ### 0.3.11 — 2026-11-18
 
 - **One sink per TV, always**: every new cast now pre-empts the previous one on

@@ -61,6 +61,10 @@ class Settings(context: Context) {
         get() = prefs.getInt("update_skip", 0)
         set(value) = prefs.edit().putInt("update_skip", value).apply()
 
+    var aspectMode: Int
+        get() = prefs.getInt("aspect_mode", 0)
+        set(value) = prefs.edit().putInt("aspect_mode", value).apply()
+
     fun clearSession() {
         prefs.edit()
             .remove("session_token")

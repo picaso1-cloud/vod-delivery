@@ -2,6 +2,7 @@ package com.souhail.vodcast.tv
 
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -58,6 +59,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.souhail.vodcast.data.Api
 import com.souhail.vodcast.data.Settings
@@ -339,6 +341,26 @@ class TvPlayerActivity : ComponentActivity() {
         overlayTick.intValue += 1
     }
 
+    private var playerView: PlayerView? = null
+
+    private fun aspectResizeMode(): Int = when (settings.aspectMode) {
+        1 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+        2 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+    }
+
+    private fun aspectName(): String = when (settings.aspectMode) {
+        1 -> "Fill"
+        2 -> "Zoom"
+        else -> "Fit"
+    }
+
+    private fun cycleAspect() {
+        settings.aspectMode = (settings.aspectMode + 1) % 3
+        playerView?.resizeMode = aspectResizeMode()
+        AppLog.i("TVPLAYER", "aspect ${aspectName()}")
+    }
+
     private fun stopPlayback(silent: Boolean = false) {
         contentOffset = 0.0
         if (exo != null) {
@@ -348,6 +370,7 @@ class TvPlayerActivity : ComponentActivity() {
         }
         statusJob?.cancel()
         statusJob = null
+        playerView = null
         playing.value = false
         panelOpen.value = false
         audioChoices.value = emptyList()
@@ -411,6 +434,13 @@ class TvPlayerActivity : ComponentActivity() {
                             if (playing.value) {
                                 panelOpen.value = true
                                 panelIndex.intValue = 0
+                                showOverlay()
+                                true
+                            } else false
+                        }
+                        Key.DirectionUp -> {
+                            if (playing.value) {
+                                cycleAspect()
                                 showOverlay()
                                 true
                             } else false
@@ -539,13 +569,22 @@ class TvPlayerActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
                     PlayerView(context).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
                         useController = false
                         player = exo
+                        resizeMode = aspectResizeMode()
                         isFocusable = false
                         isFocusableInTouchMode = false
+                        playerView = this
                     }
                 },
-                update = { view -> view.player = exo },
+                update = { view ->
+                    view.player = exo
+                    view.resizeMode = aspectResizeMode()
+                },
             )
             LaunchedEffect(overlayTick.intValue, panelOpen.value) {
                 overlayVisible.value = true
@@ -564,7 +603,7 @@ class TvPlayerActivity : ComponentActivity() {
                     )
                     Text(
                         if (switching.value) statusText.value
-                        else "OK play/pause · ◀ ▶ ±30s · ▼ tracks · Back stop",
+                        else "▲ ${aspectName()} · OK play/pause · ◀ ▶ ±30s · ▼ tracks · Back stop",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xB3FFFFFF),
                     )
