@@ -164,6 +164,12 @@ CREATE TABLE IF NOT EXISTS banned_tvs (
     label TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS players (
+    player_id TEXT PRIMARY KEY,
+    name TEXT,
+    created_at TEXT,
+    last_seen TEXT
+);
 CREATE TABLE IF NOT EXISTS media_tracks (
     media_key TEXT PRIMARY KEY,
     audio TEXT,
@@ -397,6 +403,41 @@ def is_banned_mac(conn: sqlite3.Connection, mac: str | None) -> bool:
     if not identity:
         return False
     return conn.execute("SELECT 1 FROM banned_tvs WHERE mac=?", (identity,)).fetchone() is not None
+
+
+def upsert_player(conn: sqlite3.Connection, name: str) -> dict:
+    import uuid
+
+    row = conn.execute("SELECT * FROM players WHERE name=?", (name,)).fetchone()
+    now = _now()
+    if row:
+        conn.execute("UPDATE players SET last_seen=? WHERE player_id=?", (now, row["player_id"]))
+        conn.commit()
+        return {"player_id": row["player_id"], "name": row["name"], "last_seen": now}
+    player_id = uuid.uuid4().hex[:12]
+    conn.execute(
+        "INSERT INTO players(player_id, name, created_at, last_seen) VALUES(?,?,?,?)",
+        (player_id, name, now, now),
+    )
+    conn.commit()
+    return {"player_id": player_id, "name": name, "last_seen": now}
+
+
+def get_player(conn: sqlite3.Connection, player_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM players WHERE player_id=?", (player_id,)).fetchone()
+
+
+def get_player_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM players WHERE name=?", (name,)).fetchone()
+
+
+def list_players(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM players ORDER BY last_seen DESC").fetchall()
+
+
+def touch_player(conn: sqlite3.Connection, player_id: str) -> None:
+    conn.execute("UPDATE players SET last_seen=? WHERE player_id=?", (_now(), player_id))
+    conn.commit()
 
 
 def list_banned(conn: sqlite3.Connection) -> list[sqlite3.Row]:

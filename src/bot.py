@@ -22,7 +22,7 @@ from aiogram.types import (
     User,
 )
 
-from . import auditor, fastpath, library, provider, proxy, store, telemetry
+from . import auditor, fastpath, library, players, provider, proxy, store, telemetry
 from .appsettings import is_allowed
 from .config import BOT_TOKEN
 from .llm import parse_request, suggest as llm_suggest
@@ -3366,8 +3366,19 @@ async def main() -> None:
     async def api_tvs() -> list:
         conn = store.connect()
         rows = conn.execute("SELECT name, ip, mac, kind, prefer_proxy, downgrade, ignored FROM tvs WHERE ignored=0").fetchall()
+        known = {r["name"] for r in rows}
+        out = [dict(r) for r in rows]
+        for row in store.list_players(conn):
+            if row["name"] in known:
+                continue
+            out.append({
+                "name": row["name"], "ip": players.ip(row["player_id"]) or None,
+                "mac": None, "kind": "tvapp", "prefer_proxy": 0, "downgrade": 0,
+                "ignored": 0, "online": players.online(row["player_id"]),
+                "player_id": row["player_id"],
+            })
         conn.close()
-        return [dict(r) for r in rows]
+        return out
 
     async def api_ban_tv(mac: str = "", label: str = "") -> dict:
         conn = store.connect()
@@ -3520,11 +3531,70 @@ async def main() -> None:
             pass
         return Renderer(location=r.location, friendly_name=name, udn=r.udn)
 
+    async def _play_on_player(player_row, media_key: str, start_position: float,
+                              audio: int = -1, sub: int = -1) -> dict:
+        player_id = player_row["player_id"]
+        player_name = player_row["name"]
+        if not players.online(player_id):
+            return {"ok": False, "error": f"{player_name} is not connected — open the TV app"}
+        payload_obj = await _resolve_media_key(media_key)
+        title = (payload_obj or {}).get("title") or media_key
+        player_ip = players.ip(player_id) or "192.168.1.1"
+        conn = store.connect()
+        lib = store.get_library_item(conn, media_key)
+        conn.close()
+        library_path = Path(lib["path"]) if lib and lib["status"] == "ready" and lib["path"] else None
+        if library_path is not None and not library_path.exists():
+            library_path = None
+        if library_path is not None:
+            suffix = library_path.suffix.lstrip(".").lower()
+            mime = {"mkv": "video/x-matroska", "mp4": "video/mp4"}.get(suffix, "video/mpeg")
+            session_obj = await proxy.start_library_session(library_path, title, mime)
+            url = proxy.proxied_url(session_obj.token, player_ip)
+            token = session_obj.token
+            duration = None
+        else:
+            stream = await api_app_stream(
+                media_key, start_position, "cache", "copy", 0, "", 1, "",
+                audio, sub,
+            )
+            if not stream.get("ok"):
+                return stream
+            url = stream.get("lan_url") or stream.get("public_url")
+            if not url:
+                return {"ok": False, "error": "no playable URL"}
+            token = stream.get("token") or ""
+            duration = stream.get("duration")
+        payload = {
+            "type": "play",
+            "url": url,
+            "title": title,
+            "media_key": media_key,
+            "position": float(start_position or 0.0),
+            "token": token,
+            "duration": duration,
+            "library": library_path is not None,
+        }
+        if not players.send(player_id, payload):
+            return {"ok": False, "error": "TV disconnected"}
+        players.bind(token, player_id)
+        players.set_active(player_id, player_name, token, payload["title"], media_key)
+        session_obj = proxy.get_session(token)
+        if session_obj is not None:
+            session_obj.tv_name = player_name
+        logger.info("player cast: %s -> %s (%s)", payload["title"][:40], player_name, token)
+        return {"ok": True, "detail": f"📺 {player_name} → “{payload['title']}”", "token": token}
+
     async def api_play(media_key: str, tv_name: str, start_position: float,
                        audio: int = -1, sub: int = -1) -> dict:
         payload = await _resolve_media_key(media_key)
         if not payload:
             return {"ok": False, "error": f"media_key {media_key} not found"}
+        conn = store.connect()
+        player_row = store.get_player_by_name(conn, tv_name)
+        conn.close()
+        if player_row is not None:
+            return await _play_on_player(player_row, media_key, start_position, audio, sub)
         renderer = await _resolve_renderer(tv_name)
         if renderer is None:
             return {"ok": False, "error": "no TV found (check name or power state)"}
@@ -3570,6 +3640,27 @@ async def main() -> None:
         return {"ok": "PLAYING" in result, "detail": result}
 
     async def api_control(action: str, value: float) -> dict:
+        act = players.active()
+        if act is not None:
+            player_id = act["player_id"]
+            status = players.get_status(player_id) or {}
+            if action == "stop":
+                players.send(player_id, {"type": "control", "action": "stop"})
+                await proxy.stop_session(act["token"])
+                players.forget(act["token"])
+                players.clear_active()
+                return {"ok": True, "state": "stopped"}
+            if action == "seek":
+                base = float(status.get("position") or 0.0)
+                target = max(0.0, base + float(value))
+                players.send(player_id, {"type": "control", "action": "seek", "value": target})
+                return {"ok": True, "position": round(target, 1)}
+            if action in ("pause", "resume", "play"):
+                players.send(player_id, {
+                    "type": "control", "action": "pause" if action == "pause" else "resume",
+                })
+                return {"ok": True, "state": "paused" if action == "pause" else "playing"}
+            return {"ok": False, "error": f"unknown action {action}"}
         if active_play is None:
             return {"ok": False, "error": "nothing playing"}
         target = active_play.renderer
@@ -3643,6 +3734,23 @@ async def main() -> None:
         return {"ok": False, "error": f"unknown action {action}"}
 
     async def api_status() -> dict:
+        act = players.active()
+        if act is not None:
+            st = players.get_status(act["player_id"]) or {}
+            state = str(st.get("state") or "").lower()
+            position = st.get("position")
+            duration = st.get("duration")
+            pos = None
+            if position is not None:
+                pos = {"position": round(float(position), 1), "duration": round(float(duration or 0), 1)}
+            return {
+                "playing": state in ("playing", "buffering", "ready", "paused"),
+                "tv": act["name"],
+                "paused": state == "paused",
+                "title": act["title"],
+                "position": pos,
+                "diag": {"player": act["player_id"], "token": act["token"], "state": state},
+            }
         if active_play is None:
             return {"playing": False}
         pos = None
@@ -3859,6 +3967,22 @@ async def main() -> None:
         }
 
     async def api_app_control(token: str, action: str, value: float = 0.0) -> dict:
+        player_id = players.player_for_token(token)
+        if player_id:
+            if action == "stop":
+                players.send(player_id, {"type": "control", "action": "stop"})
+                await proxy.stop_session(token)
+                players.forget(token)
+                players.clear_active()
+                return {"ok": True, "state": "stopped"}
+            if action == "seek":
+                players.send(player_id, {"type": "control", "action": "seek", "value": float(value)})
+                return {"ok": True, "state": "seeking", "position": float(value)}
+            if action in ("pause", "resume", "play"):
+                target = "pause" if action == "pause" else "resume"
+                players.send(player_id, {"type": "control", "action": target})
+                return {"ok": True, "state": "paused" if target == "pause" else "playing"}
+            return {"ok": False, "error": f"unknown action {action}"}
         s = proxy.get_session(token)
         if s is None:
             return {"ok": False, "error": "unknown session"}

@@ -118,6 +118,11 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun sessions(): SessionsResponse = json.decodeFromString(exec("api/app/sessions"))
 
+    suspend fun registerPlayer(name: String): PlayerRegistration =
+        json.decodeFromString(
+            exec("api/app/player/register", mapOf("name" to name), post = true)
+        )
+
     suspend fun update(current: Int): UpdateInfo =
         json.decodeFromString(exec("api/app/update", mapOf("current" to current.toString())))
 

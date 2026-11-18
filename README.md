@@ -132,6 +132,24 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.7 — 2026-11-18
+
+- **TV player mode** (same APK, `LEANBACK_LAUNCHER`): a full-screen ExoPlayer
+  for Android TV boxes that only plays what the phone picks — no browsing, no
+  typing. It registers with the server (`/api/app/player/register`), keeps a
+  WebSocket open (`/api/app/player/ws`) and reacts to `play` /
+  `pause|resume|seek|stop`.
+- The server treats a `tvapp` player like a cast target: `/api/app/play` starts
+  the session and pushes it; library titles are served from disk via
+  `start_library_session` (instant, no provider), everything else uses the
+  normal proxy stream. Status is reported every 2 s and written to
+  `watch_progress`, so resume/Continue watching work from any device.
+- Phone side: `kind=tvapp` targets are routed through the server (not
+  phone-direct DLNA), and the existing Remote screen drives them via
+  `/api/app/playback` and `/api/app/status`.
+- D-pad on the TV: OK play/pause, ◀ ▶ ±30 s, Back stop. Verified on a 1 GB
+  Amlogic X98Q with hardware decoding.
+
 ### 0.3.6 — 2026-11-18
 
 - **Paginated search results**: `/api/app/discover` now returns

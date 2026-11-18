@@ -160,6 +160,8 @@ credential.
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
+| POST | `/api/app/player/register` | `name` | `{ok, player_id, name}` — TV player mode |
+| WS | `/api/app/player/ws` | `player_id`, `token` | server pushes `{type:play|control}`; client sends `{type:status,state,position,duration,media_key}` |
 | GET | `/api/app/update` | `current=<versionCode>` | `{ok, version_name, version_code, size, notes, available}` |
 | GET | `/api/app/update/apk` | – | the newest APK (`application/vnd.android.package-archive`) |
 

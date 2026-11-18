@@ -6,11 +6,12 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from . import players
 from . import store
 from . import library
 from .library import owner_chat_id
@@ -774,6 +775,83 @@ async def app_search(q: str = "", type: str = "movie"):
 @app.get("/api/app/episodes", dependencies=[Depends(_app_auth)])
 async def app_episodes(series_id: int):
     return call_bridge("episodes", series_id)
+
+
+def _token_ok(token: str) -> bool:
+    if not token:
+        return False
+    conn = store.connect()
+    try:
+        return store.valid_app_token(conn, token)
+    finally:
+        conn.close()
+
+
+@app.post("/api/app/player/register", dependencies=[Depends(_app_auth)])
+async def app_player_register(name: str = ""):
+    label = (name or "").strip()[:60] or "Android TV"
+    conn = store.connect()
+    try:
+        player = store.upsert_player(conn, label)
+    finally:
+        conn.close()
+    logger.info("player registered: %s (%s)", label, player["player_id"])
+    return {"ok": True, **player}
+
+
+@app.websocket("/api/app/player/ws")
+async def app_player_ws(websocket: WebSocket, player_id: str = "", token: str = ""):
+    if not player_id or not _token_ok(token):
+        await websocket.close(code=4401)
+        return
+    conn = store.connect()
+    row = store.get_player(conn, player_id)
+    conn.close()
+    if row is None:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    player_name = row["name"] or "Android TV"
+    player_ip = websocket.client.host if websocket.client else ""
+    players.attach(player_id, player_name, websocket, asyncio.get_running_loop(), player_ip)
+    logger.info("player connected: %s (%s)", player_name, player_id)
+
+    async def pump() -> None:
+        queue = players.queue(player_id)
+        if queue is None:
+            return
+        while True:
+            payload = await queue.get()
+            await websocket.send_json(payload)
+
+    sender = asyncio.create_task(pump())
+    last_progress = 0.0
+    try:
+        while True:
+            message = await websocket.receive_json()
+            if message.get("type") != "status":
+                continue
+            players.set_status(player_id, message)
+            now = time.time()
+            media_key = str(message.get("media_key") or "")
+            position = float(message.get("position") or 0)
+            duration = float(message.get("duration") or 0)
+            if media_key and position > 0 and now - last_progress > 10:
+                last_progress = now
+                conn = store.connect()
+                try:
+                    store.touch_player(conn, player_id)
+                    store.set_progress(conn, owner_chat_id() or 0, media_key, position, duration)
+                finally:
+                    conn.close()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("player websocket closed", exc_info=True)
+    finally:
+        sender.cancel()
+        players.detach(player_id)
+        logger.info("player disconnected: %s (%s)", player_name, player_id)
 
 
 @app.get("/api/app/tvs", dependencies=[Depends(_app_auth)])

@@ -2311,7 +2311,9 @@ private fun PlayDialog(
     fun start() {
         val stream = prepared ?: return
         val picked = selectedTv
-        if (target != "player" && picked != null && (picked.mac != null || picked.kind == "cast")) {
+        if (target != "player" && picked != null &&
+            (picked.mac != null || picked.kind == "cast" || picked.kind == "tvapp")
+        ) {
             appScope.launch {
                 busy = true
                 try {

@@ -45,6 +45,14 @@ class Settings(context: Context) {
         get() = prefs.getString("session_tv", "") ?: ""
         set(value) = prefs.edit().putString("session_tv", value).apply()
 
+    var playerId: String
+        get() = prefs.getString("player_id", "") ?: ""
+        set(value) = prefs.edit().putString("player_id", value).apply()
+
+    var playerName: String
+        get() = prefs.getString("player_name", "") ?: ""
+        set(value) = prefs.edit().putString("player_name", value.trim()).apply()
+
     var lastUpdateCheck: Long
         get() = prefs.getLong("update_check", 0L)
         set(value) = prefs.edit().putLong("update_check", value).apply()

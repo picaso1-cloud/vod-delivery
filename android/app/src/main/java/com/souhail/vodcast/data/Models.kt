@@ -194,6 +194,13 @@ data class SubTrack(
 )
 
 @Serializable
+data class PlayerRegistration(
+    val ok: Boolean = false,
+    val player_id: String = "",
+    val name: String = "",
+)
+
+@Serializable
 data class UpdateInfo(
     val ok: Boolean = false,
     val version_name: String = "",
