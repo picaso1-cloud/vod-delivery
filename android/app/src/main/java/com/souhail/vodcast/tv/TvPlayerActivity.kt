@@ -189,6 +189,12 @@ class TvPlayerActivity : ComponentActivity() {
                 stopPlayback(silent = true)
             }
             "play" -> {
+                val incoming = message.optString("token")
+                if (incoming.isNotBlank() && incoming == sessionToken.value && exo != null) {
+                    AppLog.i("TVPLAYER", "play ignored — session $incoming already running")
+                    switching.value = false
+                    return
+                }
                 switching.value = false
                 val url = message.optString("url")
                 if (url.isBlank()) return

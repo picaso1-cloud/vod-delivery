@@ -71,11 +71,15 @@ class ProxySession:
     audio_index: int | None = None
     sub_index: int | None = None
     profile: str | None = None
+    tasks: list = field(default_factory=list)
+    interrupted: int = 0
 
 
 _sessions: dict[str, ProxySession] = {}
 _lock = asyncio.Lock()
 FFMPEG = "/usr/bin/ffmpeg"
+_live_released_at = 0.0
+LIVE_SLOT_LINGER_S = 90.0
 
 
 def active_session() -> ProxySession | None:
@@ -184,6 +188,51 @@ async def _kill_orphan_ffmpeg() -> None:
         pass
 
 
+def _track(session: ProxySession, task: asyncio.Task) -> asyncio.Task:
+    session.tasks = [t for t in session.tasks if not t.done()]
+    session.tasks.append(task)
+    return task
+
+
+PROVIDER_SLOT_BUDGET_S = 14.0
+
+
+async def await_provider_slot(url: str, budget: float = PROVIDER_SLOT_BUDGET_S) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget
+    attempt = 0
+    status: object = "timeout"
+    while True:
+        attempt += 1
+        try:
+            async with httpx.AsyncClient(timeout=6, follow_redirects=True) as client:
+                async with client.stream(
+                    "GET", url,
+                    headers={"Range": "bytes=0-1", "User-Agent": PROVIDER_USER_AGENT},
+                ) as resp:
+                    status = resp.status_code
+                    if resp.status_code < 400:
+                        if attempt > 1:
+                            logger.info("provider slot released after %d probes", attempt)
+                        return True
+                    status = resp.status_code
+        except Exception as exc:
+            status = f"{type(exc).__name__}: {str(exc)[:80]}"
+        if loop.time() >= deadline:
+            logger.warning("provider slot still busy after %.0fs (%s) — refusing to start %s", budget, status, url.rsplit("/", 1)[-1])
+            from .telemetry import emit
+            emit("provider", "slot_busy", "refused", status=str(status)[:60])
+            raise ProviderBusy(str(status))
+        await asyncio.sleep(1.5)
+
+
+class ProviderBusy(RuntimeError):
+    def __init__(self, status: str):
+        super().__init__(
+            f"provider slot busy ({status}) — the previous stream is still releasing, retry in ~15s"
+        )
+
+
 async def start_session(
     provider_url: str, title: str, mode: str = "copy", mime: str = "video/mpeg",
     start_offset: float = 0.0, dest_rel: Path | None = None, live: bool = False,
@@ -196,9 +245,13 @@ async def start_session(
         mode = "cache_remux"
         mime = "video/x-matroska"
     async with _lock:
+        killed_live = any(old.is_live for old in _sessions.values())
         for old in _sessions.values():
             await _kill(old)
         _sessions.clear()
+        recent_live = time.time() - _live_released_at < LIVE_SLOT_LINGER_S
+        if not live and (killed_live or recent_live):
+            await await_provider_slot(provider_url)
         await _ensure_disk_space()
         session = ProxySession(
             token=uuid.uuid4().hex[:12], provider_url=provider_url, title=title,
@@ -239,12 +292,12 @@ async def start_session(
             else:
                 logger.warning("resume: ffprobe failed for %s — starting from 0", title[:40])
     if deferred and mode.startswith("cache") and not live:
-        asyncio.create_task(_session_watchdog(session))
+        _track(session, asyncio.create_task(_session_watchdog(session)))
         logger.info("session %s prepared (deferred until first fetch) — %s", session.token, title[:40])
         return session
     await _spawn_ffmpeg(session)
     if session.is_live:
-        asyncio.create_task(_live_file_task(session))
+        _track(session, asyncio.create_task(_live_file_task(session)))
         ready = False
         for _ in range(40):
             if session.done:
@@ -259,9 +312,9 @@ async def start_session(
                 "live source unavailable — channel offline, not in subscription, "
                 "or provider slot busy (retry in ~45s)"
             )
-    asyncio.create_task(_prime(session))
+    _track(session, asyncio.create_task(_prime(session)))
     if not mode.startswith("cache"):
-        asyncio.create_task(_session_watchdog(session))
+        _track(session, asyncio.create_task(_session_watchdog(session)))
     return session
 
 
@@ -298,6 +351,8 @@ async def _live_file_task(session: ProxySession) -> None:
                     logger.warning("live appender giving up after 300 respawns (%s)", session.token)
                     break
                 await asyncio.sleep(1.0 if session.clients <= 0 else 0.3)
+                if session.done:
+                    break
                 await _spawn_ffmpeg(session)
                 continue
             appended += 1
@@ -814,7 +869,15 @@ async def stop_session(token: str) -> None:
 
 
 async def _kill(session: ProxySession) -> None:
+    global _live_released_at
     session.done = True
+    if session.is_live:
+        _live_released_at = time.time()
+    current = asyncio.current_task()
+    for task in list(session.tasks):
+        if task is not current and not task.done():
+            task.cancel()
+    session.tasks.clear()
     if session.proc and session.proc.returncode is None:
         try:
             session.proc.kill()
@@ -863,35 +926,37 @@ async def stop_all() -> None:
 
 
 async def _spawn_ffmpeg(session: ProxySession) -> None:
+    if session.done:
+        return
     if session.mode == "cache":
         if session.start_offset > 0 and session.duration_s > 0:
             session.feed_generation += 1
-            asyncio.create_task(_cache_feed_task(session, transcode=False, my_generation=session.feed_generation))
+            _track(session, asyncio.create_task(_cache_feed_task(session, transcode=False, my_generation=session.feed_generation)))
         else:
-            asyncio.create_task(_download_loop(session, session.feed_generation))
+            _track(session, asyncio.create_task(_download_loop(session, session.feed_generation)))
         return
     if session.mode == "cache_downgrade":
         session.feed_generation += 1
         feed_container = "mpegts" if session.mime == "video/mpeg" else "matroska"
-        asyncio.create_task(_cache_feed_task(
+        _track(session, asyncio.create_task(_cache_feed_task(
             session, transcode=True, my_generation=session.feed_generation,
             container=feed_container, map_args=_map_args(session, feed_container),
-        ))
+        )))
         return
     if session.mode == "cache_remux":
         session.feed_generation += 1
-        asyncio.create_task(_cache_feed_task(
+        _track(session, asyncio.create_task(_cache_feed_task(
             session, transcode=False, my_generation=session.feed_generation,
             container="matroska", map_args=_map_args(session, "matroska"),
-        ))
+        )))
         return
     if session.mode == "cache_mp4":
         session.feed_generation += 1
-        asyncio.create_task(_cache_feed_task(
+        _track(session, asyncio.create_task(_cache_feed_task(
             session, transcode=False, my_generation=session.feed_generation,
             container="mp4", extra=["-movflags", "+frag_keyframe+empty_moov+default_base_moof"],
             map_args=_map_args(session, "mp4"),
-        ))
+        )))
         return
     transcode = session.mode in ("downgrade", "cache_downgrade")
     if transcode:
@@ -1054,6 +1119,7 @@ async def _download_loop(session: ProxySession, my_generation: int = 0) -> None:
             if session.done:
                 break
             got = _file_size(session) - pos
+            session.interrupted += 1
             logger.warning("download interrupted at %s bytes (+%s this round): %s — resuming", pos, got, type(exc).__name__)
             from .telemetry import emit
             emit("downloader", "interrupted", "resuming", at_bytes=pos, gained=got, error=type(exc).__name__)

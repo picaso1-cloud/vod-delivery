@@ -408,26 +408,85 @@ async def _ensure_tv(send, chat_id: int) -> bool:
     return False
 
 
+def _sink_ip(target) -> str:
+    ip = (getattr(target, "ip", "") or "").strip()
+    if ip:
+        return ip
+    location = getattr(target, "location", "") or ""
+    match = re.match(r"https?://([^/:]+)", location)
+    return match.group(1) if match else ""
+
+
+def _playing_session_for(player_id: str) -> tuple[dict | None, object | None]:
+    act = players.active()
+    if act is None or act.get("player_id") != player_id:
+        return act, None
+    return act, proxy.get_session(act.get("token") or "")
+
+
+async def _stop_tv_app(reason: str = "new cast", except_player_id: str | None = None) -> str:
+    act = players.active()
+    if act is None:
+        return ""
+    if except_player_id and act.get("player_id") == except_player_id:
+        return ""
+    player_id = act.get("player_id") or ""
+    token = act.get("token") or ""
+    players.send(player_id, {"type": "control", "action": "stop"})
+    if token:
+        await proxy.stop_session(token)
+        players.forget(token)
+    players.clear_active()
+    logger.info("stopped TV app playback on %s (%s)", act.get("name"), reason)
+    return f"⏹ Stopped <b>{act.get('name')}</b> ({reason}).\n"
+
+
 async def _stop_active(reason: str = "new cast") -> str:
     global active_play
-    if active_play is None:
-        return ""
-    info = f"⏹ Stopped previous playback on <b>{active_play.tv_name}</b> ({reason}).\n"
-    target = active_play.renderer
-    try:
-        from .cc import stop as cc_stop
+    notes: list[str] = []
+    if active_play is not None:
+        notes.append(f"⏹ Stopped previous playback on <b>{active_play.tv_name}</b> ({reason}).\n")
+        target = active_play.renderer
+        logger.info("pre-empted DLNA/cast sink %s at %s (%s)", active_play.tv_name, _sink_ip(target), reason)
+        try:
+            from .cc import stop as cc_stop
 
-        if isinstance(target, CastTarget):
-            cc_stop(target.ip)
-        else:
-            await stop(target)
-    except Exception:
-        pass
-    if active_play.task:
-        active_play.task.cancel()
-    active_play = None
+            if isinstance(target, CastTarget):
+                cc_stop(target.ip)
+            else:
+                await stop(target)
+        except Exception:
+            pass
+        if active_play.task:
+            active_play.task.cancel()
+        active_play = None
+    tv_app_note = await _stop_tv_app(reason)
+    if tv_app_note:
+        notes.append(tv_app_note)
     await proxy.stop_all()
-    return info
+    return "".join(notes)
+
+
+_PLAY_AT: dict[str, tuple[str, float]] = {}
+_PLAY_INFLIGHT: dict[str, tuple[str, float]] = {}
+_LAST_PLAY_ERROR: dict[str, str] = {}
+PLAY_DEBOUNCE_S = 12.0
+
+
+def _recent_duplicate_play(player_id: str, media_key: str) -> bool:
+    now = time.time()
+    inflight = _PLAY_INFLIGHT.get(player_id)
+    if inflight and inflight[0] == media_key and now - inflight[1] < PLAY_DEBOUNCE_S:
+        return True
+    last = _PLAY_AT.get(player_id)
+    if not last or last[0] != media_key:
+        return False
+    if time.time() - last[1] > PLAY_DEBOUNCE_S:
+        return False
+    act, session = _playing_session_for(player_id)
+    if act is None or session is None or session.done:
+        return False
+    return bool(session.max_served > 0 or session.clients > 0 or session.ready.is_set())
 
 
 async def _poll_playback_dlna(play_id: int, renderer: Renderer, user_id: int, media_key: str, proxy_token: str | None = None) -> None:
@@ -3591,8 +3650,10 @@ async def main() -> None:
             player_name, audio, sub,
         )
         if not stream.get("ok"):
+            _LAST_PLAY_ERROR[player_id] = str(stream.get("error") or "stream failed")[:200]
             logger.warning("player %s: stream failed for %s (%s)", player_id, quality, stream.get("error"))
             return False
+        _LAST_PLAY_ERROR.pop(player_id, None)
         session_obj = proxy.get_session(stream.get("token") or "")
         if session_obj is not None and not session_obj.is_live:
             try:
@@ -3657,6 +3718,14 @@ async def main() -> None:
                 stuck = time.time() - last_progress
                 if state != "error" and stuck < 12:
                     continue
+                _, session = _playing_session_for(player_id)
+                starving = bool(
+                    session is not None and not session.done
+                    and session.interrupted >= 2 and not session.completed
+                )
+                if starving and state != "error" and stuck < 45:
+                    logger.warning("player %s: source starving (%d interruptions) — holding %s instead of stepping down", player_id, session.interrupted, current)
+                    continue
                 lower = playprofiles.next_lower(current)
                 logger.warning(
                     "player %s: %s at %s %.0fs (state=%s stuck=%.0fs) -> %s",
@@ -3693,6 +3762,13 @@ async def main() -> None:
             previous.cancel()
         payload_obj = await _resolve_media_key(media_key)
         title = (payload_obj or {}).get("title") or media_key
+        if _recent_duplicate_play(player_id, media_key):
+            logger.info("player %s: duplicate play for %s ignored — session already running", player_id, media_key)
+            return {"ok": True, "detail": f"📺 {player_name} → “{title}”", "profile": None}
+        _PLAY_INFLIGHT[player_id] = (media_key, time.time())
+        preempted = await _stop_active(f"new cast on {player_name}")
+        if preempted:
+            logger.info("player %s: pre-empted previous sink (%s)", player_id, preempted.replace("<b>", "").replace("</b>", "").replace("\n", " ").strip())
         player_ip = players.ip(player_id) or "192.168.1.1"
         conn = store.connect()
         lib = store.get_library_item(conn, media_key)
@@ -3721,6 +3797,8 @@ async def main() -> None:
             players.bind(token, player_id)
             players.set_active(player_id, player_name, token, title, media_key)
             session_obj.tv_name = player_name
+            _PLAY_AT[player_id] = (media_key, time.time())
+            _PLAY_INFLIGHT.pop(player_id, None)
             logger.info("player cast (library): %s -> %s (%s)", title[:40], player_name, token)
             return {"ok": True, "detail": f"📺 {player_name} → “{title}”", "token": token}
 
@@ -3736,8 +3814,11 @@ async def main() -> None:
                 audio = first_audio
         profile = _choose_profile(player_id, audio_ok)
         logger.info("player %s: starting at %s (audio_ok=%s codecs=%s)", player_id, profile, audio_ok, sorted(codecs))
-        if not await _start_player_playback(player_row, media_key, start_position, profile, audio, sub):
-            return {"ok": False, "error": "could not start the stream"}
+        started = await _start_player_playback(player_row, media_key, start_position, profile, audio, sub)
+        _PLAY_INFLIGHT.pop(player_id, None)
+        if not started:
+            return {"ok": False, "error": _LAST_PLAY_ERROR.get(player_id) or "could not start the stream"}
+        _PLAY_AT[player_id] = (media_key, time.time())
         _LADDER_TASKS[player_id] = asyncio.create_task(
             _player_ladder_supervisor(player_row, media_key, start_position, profile, audio, sub)
         )

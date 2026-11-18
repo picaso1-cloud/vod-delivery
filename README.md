@@ -132,6 +132,20 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.11 — 2026-11-18
+
+- **One sink per TV, always**: every new cast now pre-empts the previous one on
+  the same physical device — the server sends `stop` to the TV app, calls
+  DLNA/Chromecast `Stop`, cancels the ladder, and only then starts the new
+  stream. Switching live TV → a movie no longer leaves the DLNA player running
+  next to the TV app decoder (which produced frozen picture and audio only).
+- **Provider slot gate**: starting a VOD stream within 90 s of a live session
+  first probes the provider until the single connection is free (up to 14 s),
+  instead of spawning a download that the provider immediately kills.
+- **Duplicate plays are coalesced**: the same title requested again within 12 s
+  returns the running session instead of tearing it down and rebuilding it.
+- **TV player**: ignores a `play` command for the session it is already playing.
+
 ### 0.3.10 — 2026-11-18
 
 - **Update checks survive the server**: `UpdateGate` asks `/api/app/update` first
