@@ -37,6 +37,44 @@ fun appVersionCode(context: Context): Int = runCatching {
     }
 }.getOrDefault(0)
 
+fun appVersionName(context: Context): String = runCatching {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+}.getOrDefault("")
+
+private fun versionParts(value: String): List<Int> =
+    Regex("\\d+").findAll(value).map { it.value.toInt() }.toList()
+
+fun isNewerVersion(candidate: String, current: String): Boolean {
+    val a = versionParts(candidate)
+    val b = versionParts(current)
+    for (i in 0 until maxOf(a.size, b.size)) {
+        val x = a.getOrElse(i) { 0 }
+        val y = b.getOrElse(i) { 0 }
+        if (x != y) return x > y
+    }
+    return false
+}
+
+private suspend fun resolveUpdate(api: Api, currentCode: Int, currentName: String): UpdateInfo? {
+    val server = runCatching { api.update(currentCode) }.getOrNull()
+    if (server != null && server.available && server.version_code > currentCode) return server
+    val release = runCatching { api.githubLatest() }.getOrNull() ?: return null
+    val tag = release.tag_name.removePrefix("v")
+    if (!isNewerVersion(tag, currentName)) return null
+    val asset = release.assets.firstOrNull { it.name.startsWith("vodcast-v") && it.name.endsWith(".apk") }
+        ?: release.assets.firstOrNull { it.name.endsWith(".apk") }
+    AppLog.i("UPDATE", "github=$tag current=$currentName")
+    return UpdateInfo(
+        ok = true,
+        version_name = tag,
+        version_code = currentCode + 1,
+        size = asset?.size ?: 0,
+        notes = release.body.take(1200),
+        available = true,
+        apk_url = asset?.browser_download_url,
+    )
+}
+
 fun installApk(context: Context, file: File) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
         runCatching {
@@ -58,7 +96,8 @@ fun installApk(context: Context, file: File) {
 }
 
 @Composable
-fun UpdateGate(api: Api, settings: Settings, currentVersion: Int) {
+fun UpdateGate(api: Api, settings: Settings, currentVersion: Int, currentName: String,
+               trigger: Int = 0, notify: (String) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var info by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -66,18 +105,19 @@ fun UpdateGate(api: Api, settings: Settings, currentVersion: Int) {
     var progress by remember { mutableStateOf(0f) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(api) {
+    LaunchedEffect(api, trigger) {
+        val forced = trigger > 0
         val now = System.currentTimeMillis()
-        if (now - settings.lastUpdateCheck < CHECK_INTERVAL_MS) return@LaunchedEffect
+        if (!forced && now - settings.lastUpdateCheck < CHECK_INTERVAL_MS) return@LaunchedEffect
         settings.lastUpdateCheck = now
-        runCatching { api.update(currentVersion) }
-            .onSuccess { found ->
-                AppLog.i("UPDATE", "server=${found.version_name} (${found.version_code}) current=$currentVersion available=${found.available}")
-                if (found.available && found.version_code > currentVersion && settings.skippedVersion != found.version_code) {
-                    info = found
-                }
-            }
-            .onFailure { AppLog.w("UPDATE", "check failed: ${it.message}") }
+        val found = resolveUpdate(api, currentVersion, currentName)
+        if (found == null) {
+            if (forced) notify("You're on the latest version (${currentName}).")
+            return@LaunchedEffect
+        }
+        AppLog.i("UPDATE", "available ${found.version_name} (${found.version_code}) current=$currentVersion")
+        if (settings.skippedVersion == found.version_code && !forced) return@LaunchedEffect
+        info = found
     }
 
     val update = info ?: return
@@ -125,7 +165,12 @@ fun UpdateGate(api: Api, settings: Settings, currentVersion: Int) {
                         try {
                             val dir = File(context.cacheDir, "updates").apply { mkdirs() }
                             val apk = File(dir, "vodcast-${update.version_name}.apk")
-                            api.downloadUpdate(apk) { progress = it }
+                            val direct = update.apk_url
+                            if (!direct.isNullOrBlank()) {
+                                api.downloadUrl(direct, apk) { progress = it }
+                            } else {
+                                api.downloadUpdate(apk) { progress = it }
+                            }
                             busy = false
                             AppLog.i("UPDATE", "downloaded ${apk.length()} bytes")
                             installApk(context, apk)

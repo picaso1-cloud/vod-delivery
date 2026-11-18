@@ -74,6 +74,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -189,6 +190,7 @@ fun VodApp(settings: Settings) {
     var searchError by remember { mutableStateOf<String?>(null) }
     var sort by remember { mutableStateOf("relevance") }
     var loadingMore by remember { mutableStateOf(false) }
+    var updateTick by remember { mutableIntStateOf(0) }
 
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var watchlist by remember { mutableStateOf<WatchlistResponse?>(null) }
@@ -522,6 +524,9 @@ fun VodApp(settings: Settings) {
                     initialLan = settings.lanUrl,
                     initialPublic = settings.publicUrl,
                     initialToken = settings.token,
+                    onCheckUpdate = {
+                        if (api == null) toast = "Connect first" else updateTick++
+                    },
                 ) { lan, pub, token ->
                     scope.launch {
                         val lanCandidates = lan.split(',', ';', ' ')
@@ -736,7 +741,12 @@ fun VodApp(settings: Settings) {
 
                 Screen.Logs -> LogsScreen()
             }
-            api?.let { client -> UpdateGate(client, settings, appVersionCode(context)) }
+            api?.let { client ->
+                UpdateGate(
+                    client, settings, appVersionCode(context), appVersionName(context), updateTick,
+                    notify = { toast = it },
+                )
+            }
         }
     }
 
@@ -814,8 +824,10 @@ private fun SetupScreen(
     initialLan: String,
     initialPublic: String,
     initialToken: String,
+    onCheckUpdate: () -> Unit,
     onSave: (String, String, String) -> Unit,
 ) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var lan by remember { mutableStateOf(initialLan.ifBlank { "http://192.168.1.240:8095" }) }
     var pub by remember { mutableStateOf(initialPublic.ifBlank { "https://vod.allocamera.com" }) }
     var token by remember { mutableStateOf(initialToken) }
@@ -847,6 +859,14 @@ private fun SetupScreen(
             enabled = lan.isNotBlank() && token.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Connect") }
+        OutlinedButton(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth()) {
+            Text("Check for updates")
+        }
+        Text(
+            "Installed: ${appVersionName(ctx)} (${appVersionCode(ctx)})",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

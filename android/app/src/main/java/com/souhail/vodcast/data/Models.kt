@@ -208,6 +208,21 @@ data class UpdateInfo(
     val size: Long = 0,
     val notes: String = "",
     val available: Boolean = false,
+    val apk_url: String? = null,
+)
+
+@Serializable
+data class GithubAsset(
+    val name: String = "",
+    val size: Long = 0,
+    val browser_download_url: String = "",
+)
+
+@Serializable
+data class GithubRelease(
+    val tag_name: String = "",
+    val body: String = "",
+    val assets: List<GithubAsset> = emptyList(),
 )
 
 @Serializable

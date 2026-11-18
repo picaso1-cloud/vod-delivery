@@ -61,7 +61,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.souhail.vodcast.data.Api
 import com.souhail.vodcast.data.Settings
+import com.souhail.vodcast.ui.UpdateGate
 import com.souhail.vodcast.ui.VodTheme
+import com.souhail.vodcast.ui.appVersionCode
+import com.souhail.vodcast.ui.appVersionName
 import com.souhail.vodcast.util.AppLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -425,6 +428,15 @@ class TvPlayerActivity : ComponentActivity() {
             } else {
                 TvWaiting()
             }
+            api?.let { client ->
+                UpdateGate(
+                    client,
+                    settings,
+                    appVersionCode(this@TvPlayerActivity),
+                    appVersionName(this@TvPlayerActivity),
+                    notify = { statusText.value = it },
+                )
+            }
         }
     }
 
@@ -493,6 +505,12 @@ class TvPlayerActivity : ComponentActivity() {
                 style = MaterialTheme.typography.bodyLarge,
             )
             Spacer(Modifier.height(16.dp))
+            Text(
+                "v${appVersionName(this@TvPlayerActivity)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier

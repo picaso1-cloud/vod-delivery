@@ -126,6 +126,50 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun update(current: Int): UpdateInfo =
         json.decodeFromString(exec("api/app/update", mapOf("current" to current.toString())))
 
+    private val publicClient = OkHttpClient.Builder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+
+    suspend fun githubLatest(): GithubRelease? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("https://api.github.com/repos/picaso1-cloud/vod-delivery/releases/latest")
+            .header("Accept", "application/vnd.github+json")
+            .build()
+        runCatching {
+            publicClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val body = resp.body?.string() ?: return@use null
+                json.decodeFromString<GithubRelease>(body)
+            }
+        }.getOrNull()
+    }
+
+    suspend fun downloadUrl(url: String, dest: java.io.File, onProgress: (Float) -> Unit = {}) =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder().url(url).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("HTTP ${resp.code} downloading update")
+                val body = resp.body ?: error("empty update body")
+                val total = body.contentLength()
+                dest.parentFile?.mkdirs()
+                body.byteStream().use { input ->
+                    dest.outputStream().use { out ->
+                        val buffer = ByteArray(128 * 1024)
+                        var done = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            out.write(buffer, 0, read)
+                            done += read
+                            if (total > 0) onProgress(done.toFloat() / total)
+                        }
+                    }
+                }
+            }
+            dest.length()
+        }
+
     suspend fun downloadUpdate(dest: java.io.File, onProgress: (Float) -> Unit = {}) =
         withContext(Dispatchers.IO) {
             val httpUrl = url("api/app/update/apk", emptyMap())

@@ -132,6 +132,17 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.10 — 2026-11-18
+
+- **Update checks survive the server**: `UpdateGate` asks `/api/app/update` first
+  (LAN, notes, server-hosted APK) and falls back to the public GitHub release
+  (`api.github.com/.../releases/latest`) when that fails. The repo is public, so
+  no token is needed; the APK is taken from the release asset and installed the
+  same way.
+- **All clients check**: the phone still checks every 6 h, the TV app checks on
+  launch while idle and shows the dialog for D-pad; both show the installed
+  version, and the phone has a manual "Check for updates" button in settings.
+
 ### 0.3.9 — 2026-11-18
 
 - **Per-TV adaptive quality ladder**: `copy → 1080p → 720p → 480p → 360p`.
