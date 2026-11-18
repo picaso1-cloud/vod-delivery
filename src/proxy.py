@@ -70,6 +70,7 @@ class ProxySession:
     tv_name: str | None = None
     audio_index: int | None = None
     sub_index: int | None = None
+    profile: str | None = None
 
 
 _sessions: dict[str, ProxySession] = {}
@@ -188,6 +189,7 @@ async def start_session(
     start_offset: float = 0.0, dest_rel: Path | None = None, live: bool = False,
     declare_current: bool = False, deferred: bool = False,
     audio_index: int | None = None, sub_index: int | None = None,
+    profile: str | None = None,
 ) -> ProxySession:
     await _kill_orphan_ffmpeg()
     if audio_index is not None and mode == "cache":
@@ -202,6 +204,7 @@ async def start_session(
             token=uuid.uuid4().hex[:12], provider_url=provider_url, title=title,
             mode=mode, mime=mime, start_offset=start_offset, dest_rel=dest_rel, is_live=live,
             declare_current=declare_current, audio_index=audio_index, sub_index=sub_index,
+            profile=profile,
         )
         if mode == "hls":
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -354,14 +357,29 @@ async def _feed_progress_reader(rd: int, session: ProxySession) -> None:
             pass
 
 
+def transcode_args(profile: str | None) -> tuple[list, list]:
+    from .playprofiles import spec
+
+    cfg = spec(profile)
+    width, height = cfg["width"], cfg["height"]
+    video = [
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", str(cfg["crf"]),
+        "-maxrate", f"{cfg['maxrate']}k", "-bufsize", f"{cfg['bufsize']}k",
+        "-vf", (
+            f"scale=w={width}:h={height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+        ),
+    ]
+    audio = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+    return video, audio
+
+
 def _decoder_codec_args(session: ProxySession, transcode: bool) -> list:
     if not transcode:
         return ["-c", "copy"]
-    return [
-        "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "192k", "-ac", "2",
-    ]
+    video, audio = transcode_args(session.profile)
+    return [*video, *audio]
 
 
 async def _spawn_virtual_decoder(session: ProxySession, content_time: float, transcode: bool) -> None:
@@ -656,11 +674,8 @@ async def _cache_feed_task(session: ProxySession, transcode: bool, my_generation
         if session.duration_s:
             target_s = min(target_s, max(0.0, session.duration_s * 0.98))
         if transcode:
-            codec_args = [
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black",
-                "-c:a", "aac", "-b:a", "192k", "-ac", "2",
-            ]
+            video, audio = transcode_args(session.profile)
+            codec_args = [*video, *audio]
         else:
             codec_args = ["-c", "copy"]
         pr, pw = os.pipe()
@@ -857,9 +872,10 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
         return
     if session.mode == "cache_downgrade":
         session.feed_generation += 1
+        feed_container = "mpegts" if session.mime == "video/mpeg" else "matroska"
         asyncio.create_task(_cache_feed_task(
             session, transcode=True, my_generation=session.feed_generation,
-            map_args=_map_args(session, "mpegts"),
+            container=feed_container, map_args=_map_args(session, feed_container),
         ))
         return
     if session.mode == "cache_remux":
@@ -879,12 +895,11 @@ async def _spawn_ffmpeg(session: ProxySession) -> None:
         return
     transcode = session.mode in ("downgrade", "cache_downgrade")
     if transcode:
-        vcodec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"]
-        acodec = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        vcodec, acodec = transcode_args(session.profile)
     else:
         vcodec = ["-c:v", "copy"]
         acodec = ["-c:a", "copy"]
-    container = "mpegts" if session.mode == "cache_downgrade" else "matroska"
+    container = "mpegts" if session.mime == "video/mpeg" else "matroska"
 
     stderr_target: int | None
     seek_args = ["-ss", f"{session.start_offset:.3f}"] if session.start_offset > 0 else []

@@ -132,6 +132,21 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.9 — 2026-11-18
+
+- **Per-TV adaptive quality ladder**: `copy → 1080p → 720p → 480p → 360p`.
+  The player supervisor watches the TV's reported position; on a decoder error
+  or 12 s without progress it restarts the same position one step lower, and
+  gives up only at the floor. The highest working profile is stored per player
+  (`players.best_profile`) and reused next time; after 3 clean plays it probes
+  one level up, and a failed probe suppresses upgrades for 6 h.
+- **TV transcodes are MKV, not TS**: the MPEG-TS profile stalled on the SC_96Q
+  even at 360p; the same ladder in Matroska plays 1080p. DLNA casting keeps TS.
+- **Growing-file fix**: player sessions start with `declare_current=0`, so the
+  first fetch no longer advertises a 10 KB Content-Length.
+- The TV app shows "Switching to …" and ignores the transient HTTP error during
+  a step-down.
+
 ### 0.3.8 — 2026-11-18
 
 - **TV player refinements**: the title overlay auto-hides after 4 s and returns

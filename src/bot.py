@@ -3531,12 +3531,166 @@ async def main() -> None:
             pass
         return Renderer(location=r.location, friendly_name=name, udn=r.udn)
 
+    _LADDER_TASKS: dict[str, asyncio.Task] = {}
+
+    def _player_row_now(player_id: str):
+        conn = store.connect()
+        try:
+            return store.get_player(conn, player_id)
+        finally:
+            conn.close()
+
+    def _remember_profile(player_id: str, profile: str) -> None:
+        conn = store.connect()
+        try:
+            row = store.get_player(conn, player_id)
+            clean = int((row["clean_plays"] if row else 0) or 0) + 1
+            store.set_player_profile(conn, player_id, profile, clean, None)
+        finally:
+            conn.close()
+
+    def _note_profile_failure(player_id: str) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        conn = store.connect()
+        try:
+            row = store.get_player(conn, player_id)
+            after = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(timespec="seconds")
+            store.set_player_profile(
+                conn, player_id, ((row["best_profile"] if row else None) or "1080p"), 0, after,
+            )
+        finally:
+            conn.close()
+
+    def _choose_profile(player_id: str, audio_ok: bool) -> str:
+        from . import playprofiles
+
+        row = _player_row_now(player_id)
+        remembered = ((row["best_profile"] if row else None) or "").lower() or None
+        clean = int((row["clean_plays"] if row else 0) or 0)
+        upgrade_after = (row["upgrade_after"] if row else None) or ""
+        base = remembered or ("copy" if audio_ok else "1080p")
+        if not audio_ok and base == "copy":
+            base = "1080p"
+        if remembered and clean >= 3 and upgrade_after <= store._now():
+            up = playprofiles.one_above(base)
+            if up:
+                logger.info("player %s: probing %s (up from %s)", player_id, up, base)
+                return up
+        return base
+
+    async def _start_player_playback(player_row, media_key: str, position: float,
+                                     quality: str, audio: int, sub: int) -> bool:
+        player_id = player_row["player_id"]
+        player_name = player_row["name"]
+        players.send(player_id, {"type": "loading", "message": f"Switching to {quality}…"})
+        payload_obj = await _resolve_media_key(media_key)
+        title = (payload_obj or {}).get("title") or media_key
+        stream = await api_app_stream(
+            media_key, float(position or 0.0), "cache", quality, 0, "", 0,
+            player_name, audio, sub,
+        )
+        if not stream.get("ok"):
+            logger.warning("player %s: stream failed for %s (%s)", player_id, quality, stream.get("error"))
+            return False
+        session_obj = proxy.get_session(stream.get("token") or "")
+        if session_obj is not None and not session_obj.is_live:
+            try:
+                await asyncio.wait_for(session_obj.ready.wait(), timeout=25)
+            except asyncio.TimeoutError:
+                logger.warning("player %s: session %s not primed", player_id, session_obj.token)
+        url = stream.get("lan_url") or stream.get("public_url")
+        if not url:
+            logger.warning("player %s: no playable URL", player_id)
+            return False
+        token = stream.get("token") or ""
+        payload = {
+            "type": "play",
+            "url": url,
+            "title": title,
+            "media_key": media_key,
+            "position": 0.0,
+            "offset": float(position or 0.0),
+            "token": token,
+            "duration": stream.get("duration"),
+            "library": False,
+            "profile": quality,
+        }
+        if not players.send(player_id, payload):
+            return False
+        players.bind(token, player_id)
+        players.set_active(player_id, player_name, token, title, media_key)
+        if session_obj is not None:
+            session_obj.tv_name = player_name
+        logger.info("player cast: %s -> %s (%s, %.0fs, %s)", title[:40], player_name, token, position or 0, quality)
+        return True
+
+    async def _player_ladder_supervisor(player_row, media_key: str, position: float,
+                                        profile: str, audio: int, sub: int) -> None:
+        from . import playprofiles
+
+        player_id = player_row["player_id"]
+        current = profile
+        base = float(position or 0.0)
+        last_pos = base
+        last_progress = time.time()
+        healthy = False
+        grace_until = 0.0
+        try:
+            while players.online(player_id):
+                await asyncio.sleep(2)
+                status = players.get_status(player_id) or {}
+                state = (status.get("state") or "").lower()
+                pos = float(status.get("position") or 0.0)
+                if state in ("stopped", "idle", "ended"):
+                    if time.time() < grace_until:
+                        continue
+                    return
+                if pos > last_pos + 0.5:
+                    last_pos = pos
+                    last_progress = time.time()
+                    if not healthy and pos > base + 3:
+                        healthy = True
+                        _remember_profile(player_id, current)
+                        logger.info("player %s: %s healthy at %.0fs", player_id, current, pos)
+                    continue
+                stuck = time.time() - last_progress
+                if state != "error" and stuck < 12:
+                    continue
+                lower = playprofiles.next_lower(current)
+                logger.warning(
+                    "player %s: %s at %s %.0fs (state=%s stuck=%.0fs) -> %s",
+                    player_id, "error" if state == "error" else "stall",
+                    current, last_pos, state, stuck, lower or "give up",
+                )
+                if lower is None:
+                    players.send(player_id, {
+                        "type": "error",
+                        "message": "This title can't play on this TV — try another one.",
+                    })
+                    return
+                _note_profile_failure(player_id)
+                if not await _start_player_playback(player_row, media_key, last_pos, lower, audio, sub):
+                    return
+                current = lower
+                base = last_pos
+                last_progress = time.time()
+                healthy = False
+                grace_until = time.time() + 10
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("player ladder crashed")
+
     async def _play_on_player(player_row, media_key: str, start_position: float,
                               audio: int = -1, sub: int = -1) -> dict:
         player_id = player_row["player_id"]
         player_name = player_row["name"]
         if not players.online(player_id):
             return {"ok": False, "error": f"{player_name} is not connected — open the TV app"}
+        previous = _LADDER_TASKS.pop(player_id, None)
+        if previous and not previous.done():
+            previous.cancel()
         payload_obj = await _resolve_media_key(media_key)
         title = (payload_obj or {}).get("title") or media_key
         player_ip = players.ip(player_id) or "192.168.1.1"
@@ -3552,57 +3706,42 @@ async def main() -> None:
             session_obj = await proxy.start_library_session(library_path, title, mime)
             url = proxy.proxied_url(session_obj.token, player_ip)
             token = session_obj.token
-            duration = None
-        else:
-            from . import trackprobe as _trackprobe
-
-            quality = "copy"
-            cached_tracks = _trackprobe.get_cached(media_key) or {}
-            codecs = {(t.get("codec") or "").lower() for t in (cached_tracks.get("audio") or [])}
-            friendly = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le"}
-            if codecs and not (codecs & friendly):
-                quality = "downgrade"
-                logger.info("player cast: audio %s needs a transcode for %s", sorted(codecs), media_key)
-                if audio < 0:
-                    first_audio = (cached_tracks.get("audio") or [{}])[0].get("index")
-                    if isinstance(first_audio, int):
-                        audio = first_audio
-            stream = await api_app_stream(
-                media_key, start_position, "cache", quality, 0, "", 1, "",
-                audio, sub,
-            )
-            session_obj = proxy.get_session(stream.get("token") or "")
-            if session_obj is not None and not session_obj.is_live:
-                try:
-                    await asyncio.wait_for(session_obj.ready.wait(), timeout=25)
-                except asyncio.TimeoutError:
-                    logger.warning("player cast: session %s not primed, sending anyway", session_obj.token)
-            if not stream.get("ok"):
-                return stream
-            url = stream.get("lan_url") or stream.get("public_url")
-            if not url:
-                return {"ok": False, "error": "no playable URL"}
-            token = stream.get("token") or ""
-            duration = stream.get("duration")
-        payload = {
-            "type": "play",
-            "url": url,
-            "title": title,
-            "media_key": media_key,
-            "position": float(start_position or 0.0),
-            "token": token,
-            "duration": duration,
-            "library": library_path is not None,
-        }
-        if not players.send(player_id, payload):
-            return {"ok": False, "error": "TV disconnected"}
-        players.bind(token, player_id)
-        players.set_active(player_id, player_name, token, payload["title"], media_key)
-        session_obj = proxy.get_session(token)
-        if session_obj is not None:
+            payload = {
+                "type": "play",
+                "url": url,
+                "title": title,
+                "media_key": media_key,
+                "position": float(start_position or 0.0),
+                "token": token,
+                "duration": None,
+                "library": True,
+            }
+            if not players.send(player_id, payload):
+                return {"ok": False, "error": "TV disconnected"}
+            players.bind(token, player_id)
+            players.set_active(player_id, player_name, token, title, media_key)
             session_obj.tv_name = player_name
-        logger.info("player cast: %s -> %s (%s)", payload["title"][:40], player_name, token)
-        return {"ok": True, "detail": f"📺 {player_name} → “{payload['title']}”", "token": token}
+            logger.info("player cast (library): %s -> %s (%s)", title[:40], player_name, token)
+            return {"ok": True, "detail": f"📺 {player_name} → “{title}”", "token": token}
+
+        from . import trackprobe
+
+        cached_tracks = trackprobe.get_cached(media_key) or {}
+        codecs = {(t.get("codec") or "").lower() for t in (cached_tracks.get("audio") or [])}
+        friendly = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le"}
+        audio_ok = not codecs or bool(codecs & friendly)
+        if not audio_ok and audio < 0:
+            first_audio = (cached_tracks.get("audio") or [{}])[0].get("index")
+            if isinstance(first_audio, int):
+                audio = first_audio
+        profile = _choose_profile(player_id, audio_ok)
+        logger.info("player %s: starting at %s (audio_ok=%s codecs=%s)", player_id, profile, audio_ok, sorted(codecs))
+        if not await _start_player_playback(player_row, media_key, start_position, profile, audio, sub):
+            return {"ok": False, "error": "could not start the stream"}
+        _LADDER_TASKS[player_id] = asyncio.create_task(
+            _player_ladder_supervisor(player_row, media_key, start_position, profile, audio, sub)
+        )
+        return {"ok": True, "detail": f"📺 {player_name} → “{title}”", "profile": profile}
 
     async def api_play(media_key: str, tv_name: str, start_position: float,
                        audio: int = -1, sub: int = -1) -> dict:
@@ -3901,12 +4040,17 @@ async def main() -> None:
         audio_index = int(audio) if int(audio) >= 0 else None
         sub_index = int(sub) if int(sub) >= 0 else None
         fmt = (format or "").lower()
+        profile = None
         if fmt == "mp4":
             actual_mode, mime, served_ext = "cache_mp4", "video/mp4", "mp4"
         elif mode == "virtual":
             actual_mode, mime, served_ext = "virtual", "video/mpeg", "ts"
+        elif quality in ("1080p", "720p", "480p", "360p"):
+            actual_mode, mime, served_ext = "cache_downgrade", "video/x-matroska", "mkv"
+            profile = quality
         elif quality == "downgrade":
             actual_mode, mime, served_ext = "cache_downgrade", "video/mpeg", "ts"
+            profile = "1080p"
         else:
             actual_mode = "cache"
             mime = "video/x-matroska" if payload["ext"] in ("mkv", "mp4") else "video/mpeg"
@@ -3935,6 +4079,7 @@ async def main() -> None:
                     deferred=deferred,
                     audio_index=audio_index,
                     sub_index=sub_index,
+                    profile=profile,
                 )
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}

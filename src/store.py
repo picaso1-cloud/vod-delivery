@@ -284,6 +284,10 @@ def connect() -> sqlite3.Connection:
             conn.execute("ALTER TABLE movies ADD COLUMN subs_lang TEXT")
         if "probe_subs" not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN probe_subs TEXT")
+    player_cols = {r["name"] for r in conn.execute("PRAGMA table_info(players)")}
+    for col, ddl in (("best_profile", "TEXT"), ("clean_plays", "INTEGER DEFAULT 0"), ("upgrade_after", "TEXT")):
+        if col not in player_cols:
+            conn.execute(f"ALTER TABLE players ADD COLUMN {col} {ddl}")
     lib_cols = {r["name"] for r in conn.execute("PRAGMA table_info(library)")}
     for col, ddl in (("subs_path", "TEXT"), ("subs_lang", "TEXT")):
         if col not in lib_cols:
@@ -433,6 +437,15 @@ def get_player_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | Non
 
 def list_players(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM players ORDER BY last_seen DESC").fetchall()
+
+
+def set_player_profile(conn: sqlite3.Connection, player_id: str, profile: str,
+                       clean_plays: int = 0, upgrade_after: str | None = None) -> None:
+    conn.execute(
+        "UPDATE players SET best_profile=?, clean_plays=?, upgrade_after=? WHERE player_id=?",
+        (profile, clean_plays, upgrade_after, player_id),
+    )
+    conn.commit()
 
 
 def touch_player(conn: sqlite3.Connection, player_id: str) -> None:

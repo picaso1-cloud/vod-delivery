@@ -101,6 +101,8 @@ class TvPlayerActivity : ComponentActivity() {
     private var panelIndex = mutableIntStateOf(0)
     private var audioChoices = mutableStateOf<List<TrackChoice>>(emptyList())
     private var textChoices = mutableStateOf<List<TrackChoice>>(emptyList())
+    private var switching = mutableStateOf(false)
+    private var contentOffset = 0.0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -178,13 +180,21 @@ class TvPlayerActivity : ComponentActivity() {
 
     private fun handleCommand(message: JSONObject) {
         when (message.optString("type")) {
+            "loading" -> {
+                switching.value = true
+                statusText.value = message.optString("message").ifBlank { "Switching quality…" }
+                stopPlayback(silent = true)
+            }
             "play" -> {
+                switching.value = false
                 val url = message.optString("url")
                 if (url.isBlank()) return
                 title.value = message.optString("title")
                 mediaKey.value = message.optString("media_key")
                 sessionToken.value = message.optString("token")
+                val offset = message.optDouble("offset", 0.0)
                 startPlayback(url, message.optDouble("position", 0.0))
+                contentOffset = offset
             }
             "control" -> when (message.optString("action")) {
                 "pause" -> exo?.pause()
@@ -225,6 +235,10 @@ class TvPlayerActivity : ComponentActivity() {
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 AppLog.w("TVPLAYER", "player error: ${error.errorCodeName} ${error.message}")
+                if (switching.value) {
+                    connection.value = "switching"
+                    return
+                }
                 connection.value = "player error: ${error.errorCodeName}"
                 sendStatus("error")
             }
@@ -263,8 +277,8 @@ class TvPlayerActivity : ComponentActivity() {
         val payload = JSONObject()
             .put("type", "status")
             .put("state", state)
-            .put("position", player.currentPosition / 1000.0)
-            .put("duration", player.duration.coerceAtLeast(0) / 1000.0)
+            .put("position", contentOffset + player.currentPosition / 1000.0)
+            .put("duration", if (player.duration > 0) contentOffset + player.duration / 1000.0 else 0.0)
             .put("media_key", mediaKey.value)
             .put("token", sessionToken.value)
             .put("title", title.value)
@@ -317,6 +331,7 @@ class TvPlayerActivity : ComponentActivity() {
     }
 
     private fun stopPlayback(silent: Boolean = false) {
+        contentOffset = 0.0
         if (exo != null) {
             if (!silent) sendStatus("stopped")
             exo?.release()
@@ -524,7 +539,8 @@ class TvPlayerActivity : ComponentActivity() {
                         color = Color.White,
                     )
                     Text(
-                        "OK play/pause · ◀ ▶ ±30s · ▼ tracks · Back stop",
+                        if (switching.value) statusText.value
+                        else "OK play/pause · ◀ ▶ ±30s · ▼ tracks · Back stop",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xB3FFFFFF),
                     )
