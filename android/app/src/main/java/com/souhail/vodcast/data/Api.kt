@@ -216,11 +216,17 @@ class Api(private val baseUrl: String, private val token: String) {
         ratingMin: Double = 0.0,
         language: String = "",
         genre: String = "",
+        sort: String = "relevance",
+        page: Int = 1,
+        pageSize: Int = 20,
     ): DiscoverResponse =
         json.decodeFromString(
             exec(
                 "api/app/discover",
                 mapOf(
+                    "sort" to sort,
+                    "page" to page.toString(),
+                    "page_size" to pageSize.toString(),
                     "q" to q, "kind" to kind,
                     "year_from" to yearFrom.toString(), "year_to" to yearTo.toString(),
                     "rating_min" to ratingMin.toString(), "lang" to language, "genre" to genre,

@@ -264,6 +264,12 @@ data class DiscoverResponse(
     val ai_picks: List<MediaGroup> = emptyList(),
     val by_name: List<MediaGroup> = emptyList(),
     val by_meaning: List<MediaGroup> = emptyList(),
+    val items: List<MediaGroup> = emptyList(),
+    val total: Int = 0,
+    val page: Int = 1,
+    val page_size: Int = 20,
+    val has_more: Boolean = false,
+    val sort: String = "relevance",
 )
 
 @Serializable

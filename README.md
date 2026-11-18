@@ -132,6 +132,17 @@ Casting rules the app follows:
 
 ## Changelog
 
+### 0.3.6 — 2026-11-18
+
+- **Paginated search results**: `/api/app/discover` now returns
+  `items`, `total`, `page`, `page_size`, `has_more` and a `sort` field, plus the
+  legacy `by_name`/`by_meaning` for older clients. The pool is ranked once per
+  query (exact name > name > semantic) and cached for 10 min.
+- **Sorting**: `relevance` (default), `newest`, `oldest`, `rating` — applied
+  server-side over up to 120 merged results, so paging is stable.
+- **App**: one result list with sort chips (Relevance / Newest / Oldest /
+  Rating), a result count and a "Load more" button; AI picks stay on top.
+
 ### 0.3.5 — 2026-11-18
 
 - **Arabic-aware search**: `normalize_arabic` (أ/إ/آ→ا, ة→ه, ى→ي, tatweel and

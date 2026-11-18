@@ -3027,49 +3027,104 @@ async def main() -> None:
             out.append(g)
         return out
 
+    RESULT_DEPTH = 120
+
+    def _group_rating(group: Group) -> float:
+        return max((v.rating or 0) for v in group.variants) if group.variants else 0.0
+
+    def _ranked_pool(vector_groups, keyword_groups):
+        pool: dict[tuple, list] = {}
+        entries = []
+        for group in keyword_groups:
+            rank = (1000.0 + group.best_score) if group.best_score >= 120 else (500.0 + group.best_score)
+            entries.append((rank, group))
+        for group in vector_groups:
+            entries.append((100.0 + group.best_score * 10, group))
+        for rank, group in entries:
+            key = _group_key(group)
+            current = pool.get(key)
+            if current is None:
+                pool[key] = [rank, group]
+                continue
+            if rank > current[0]:
+                current[0] = rank
+            known = {v.ref_id for v in current[1].variants}
+            for variant in group.variants:
+                if variant.ref_id not in known:
+                    current[1].variants.append(variant)
+                    known.add(variant.ref_id)
+        return list(pool.values())
+
+    def _sorted_pool(pool, sort: str):
+        if sort == "newest":
+            return sorted(pool, key=lambda r: ((r[1].year or 0), r[0]), reverse=True)
+        if sort == "oldest":
+            return sorted(pool, key=lambda r: (r[1].year is None, r[1].year or 0, -r[0]))
+        if sort == "rating":
+            return sorted(pool, key=lambda r: (_group_rating(r[1]), r[0]), reverse=True)
+        return sorted(pool, key=lambda r: r[0], reverse=True)
+
     async def _discover_fast(q: str, kind: str = "", year_from: int = 0, year_to: int = 0,
                              rating_min: float = 0.0, lang: str = "", genre: str = ""):
         key = json.dumps([q.lower().strip(), kind, year_from, year_to, rating_min, lang, genre])
         now = time.time()
         cached = _DISCOVER_CACHE.get(key)
         if cached and now - cached[0] < 600:
-            return key, cached[1]
+            return key, cached[1], cached[2]
 
         groups = []
         if query_has_signal(q):
             groups = await asyncio.to_thread(
-                search_media, {"title": q, "media_type": kind or None, "language": lang or None}, 12
+                search_media, {"title": q, "media_type": kind or None, "language": lang or None},
+                RESULT_DEPTH,
             )
             groups = _filter_groups(groups, year_from, year_to, rating_min, lang)
         keyword_groups = await asyncio.to_thread(
-            keyword_search, q, kind or None, 12, year_from, year_to, rating_min, lang, genre
+            keyword_search, q, kind or None, RESULT_DEPTH, year_from, year_to, rating_min, lang, genre
         )
 
-        merged = _merge_groups(list(groups), list(keyword_groups))
-        pick_keys = {(g.kind, normalize_for_grouping(g.title), g.year) for g in merged[:1]}
+        pool = _ranked_pool(groups, keyword_groups)
+        merged = [g for _, g in _sorted_pool(pool, "relevance")]
         data = {
             "ok": True, "query": q, "ai_pending": bool(merged) and query_has_signal(q), "ai_note": "", "ai_picks": [],
             "name_only": not query_has_signal(q),
-            "by_name": [_group_json(g) for g in keyword_groups],
-            "by_meaning": [_group_json(g) for g in groups],
+            "by_name": [_group_json(g) for g in keyword_groups[:12]],
+            "by_meaning": [_group_json(g) for g in groups[:12]],
         }
-        _DISCOVER_CACHE[key] = (now, data)
-        return key, data
+        _DISCOVER_CACHE[key] = (now, data, pool)
+        return key, data, pool
 
     async def api_discover(q: str, kind: str = "", year_from: int = 0, year_to: int = 0,
-                           rating_min: float = 0.0, lang: str = "", genre: str = "") -> dict:
+                           rating_min: float = 0.0, lang: str = "", genre: str = "",
+                           sort: str = "relevance", page: int = 1, page_size: int = 20) -> dict:
         query = (q or "").strip()
         if not query:
-            return {"ok": False, "error": "query required", "ai_picks": [], "by_name": [], "by_meaning": []}
-        _, data = await _discover_fast(query, kind, year_from, year_to, rating_min, lang, genre)
-        return data
+            return {"ok": False, "error": "query required", "ai_picks": [], "by_name": [], "by_meaning": [],
+                    "items": [], "total": 0, "page": 1, "has_more": False}
+        page = max(1, int(page or 1))
+        page_size = max(1, min(50, int(page_size or 20)))
+        sort = sort if sort in ("relevance", "newest", "oldest", "rating") else "relevance"
+        _, data, pool = await _discover_fast(query, kind, year_from, year_to, rating_min, lang, genre)
+        ordered = _sorted_pool(pool, sort)
+        total = len(ordered)
+        start = (page - 1) * page_size
+        chunk = ordered[start:start + page_size]
+        return {
+            **data,
+            "items": [_group_json(entry[1]) for entry in chunk],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": start + page_size < total,
+            "sort": sort,
+        }
 
     async def api_discover_ai(q: str, kind: str = "", year_from: int = 0, year_to: int = 0,
                               rating_min: float = 0.0, lang: str = "", genre: str = "") -> dict:
         query = (q or "").strip()
         if not query:
             return {"ok": False, "error": "query required", "ai_picks": [], "ai_note": ""}
-        key, data = await _discover_fast(query, kind, year_from, year_to, rating_min, lang, genre)
+        key, data, _pool = await _discover_fast(query, kind, year_from, year_to, rating_min, lang, genre)
         now = time.time()
         cached = _DISCOVER_AI_CACHE.get(key)
         if cached and now - cached[0] < 600:

@@ -998,10 +998,14 @@ async def app_tv_rename(name: str = "", new_name: str = ""):
 
 @app.get("/api/app/discover", dependencies=[Depends(_app_auth)])
 async def app_discover(q: str = "", kind: str = "", year_from: int = 0, year_to: int = 0,
-                       rating_min: float = 0.0, lang: str = "", genre: str = ""):
+                       rating_min: float = 0.0, lang: str = "", genre: str = "",
+                       sort: str = "relevance", page: int = 1, page_size: int = 20):
     if not q.strip():
         raise HTTPException(status_code=422, detail="q required")
-    return call_bridge("discover", q, kind, int(year_from), int(year_to), float(rating_min), lang, genre)
+    return call_bridge(
+        "discover", q, kind, int(year_from), int(year_to), float(rating_min), lang, genre,
+        sort, int(page), int(page_size),
+    )
 
 
 @app.get("/api/app/discover/ai", dependencies=[Depends(_app_auth)])

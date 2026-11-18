@@ -187,6 +187,8 @@ fun VodApp(settings: Settings) {
     var selectedCategory by remember { mutableStateOf(0) }
     var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+    var sort by remember { mutableStateOf("relevance") }
+    var loadingMore by remember { mutableStateOf(false) }
 
     var library by remember { mutableStateOf<LibraryResponse?>(null) }
     var watchlist by remember { mutableStateOf<WatchlistResponse?>(null) }
@@ -310,7 +312,7 @@ fun VodApp(settings: Settings) {
                     liveResults = api!!.live(text, category)
                 } else {
                     val result = api!!.discover(
-                        text, kind, filterYearFrom, filterYearTo, filterRating, filterLang,
+                        text, kind, filterYearFrom, filterYearTo, filterRating, filterLang, "", sort,
                     )
                     discover = result
                     if (!result.ok) searchError = "search failed"
@@ -337,6 +339,26 @@ fun VodApp(settings: Settings) {
                 searchError = e.message
             } finally {
                 searching = false
+            }
+        }
+    }
+
+    fun loadMore() {
+        val current = discover ?: return
+        if (loadingMore || !current.has_more) return
+        loadingMore = true
+        scope.launch {
+            try {
+                val next = api!!.discover(
+                    query, contentType, filterYearFrom, filterYearTo, filterRating, filterLang,
+                    "", sort, current.page + 1, current.page_size,
+                )
+                discover = next.copy(items = current.items + next.items)
+                AppLog.i("DISCOVER", "page ${next.page}/${next.total} items=${discover?.items?.size}")
+            } catch (e: Exception) {
+                toast = e.message
+            } finally {
+                loadingMore = false
             }
         }
     }
@@ -569,6 +591,15 @@ fun VodApp(settings: Settings) {
                         query = query,
                         onQuery = { query = it },
                         discover = discover,
+                        sort = sort,
+                        onSort = { value ->
+                            if (value != sort) {
+                                sort = value
+                                runSearch()
+                            }
+                        },
+                        onLoadMore = { loadMore() },
+                        loadingMore = loadingMore,
                         liveResults = liveResults,
                         selectedCategory = selectedCategory,
                         onCategory = { id ->
@@ -828,6 +859,10 @@ private fun DiscoverScreen(
     query: String,
     onQuery: (String) -> Unit,
     discover: DiscoverResponse?,
+    sort: String,
+    onSort: (String) -> Unit,
+    onLoadMore: () -> Unit,
+    loadingMore: Boolean,
     liveResults: List<LiveChannel>,
     selectedCategory: Int,
     onCategory: (Int) -> Unit,
@@ -1114,17 +1149,47 @@ private fun DiscoverScreen(
                     }
                 }
                 val aiTitles: Set<String> = data.ai_picks.map { group -> group.title.lowercase() }.toSet()
-                val byName: List<MediaGroup> = data.by_name.filter { group -> group.title.lowercase() !in aiTitles }
-                val byMeaning: List<MediaGroup> = data.by_meaning.filter { group -> group.title.lowercase() !in aiTitles }
-                if (byName.isNotEmpty()) {
-                    item { SectionHeader("By name", "Titles that contain your words.") }
-                    items(byName) { group -> GroupRow(group, onClick = { onOpen(group) }) }
-                }
-                if (byMeaning.isNotEmpty()) {
-                    item { SectionHeader("By meaning", "Close in theme and mood, even with different words.") }
-                    items(byMeaning) { group -> GroupRow(group, onClick = { onOpen(group) }) }
-                }
-                if (data.ai_picks.isEmpty() && data.by_name.isEmpty() && data.by_meaning.isEmpty()) {
+                val results: List<MediaGroup> =
+                    (if (data.items.isNotEmpty()) data.items else data.by_name + data.by_meaning)
+                        .filter { group -> group.title.lowercase() !in aiTitles }
+                        .distinctBy { "${it.kind}:${it.title.lowercase()}:${it.year ?: 0}" }
+                if (results.isNotEmpty()) {
+                    item {
+                        Row(
+                            Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf(
+                                "relevance" to "Relevance",
+                                "newest" to "Newest",
+                                "oldest" to "Oldest",
+                                "rating" to "Rating",
+                            ).forEach { (value, label) ->
+                                FilterChip(
+                                    selected = sort == value,
+                                    onClick = { onSort(value) },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    }
+                    item {
+                        SectionHeader(
+                            if (data.total > 0) "${data.total} results" else "Results",
+                            "Ordered by ${sort.ifBlank { "relevance" }}.",
+                        )
+                    }
+                    items(results) { group -> GroupRow(group, onClick = { onOpen(group) }) }
+                    if (data.has_more) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                Button(onClick = onLoadMore, enabled = !loadingMore) {
+                                    Text(if (loadingMore) "Loading…" else "Load more")
+                                }
+                            }
+                        }
+                    }
+                } else if (data.ai_picks.isEmpty() && data.by_name.isEmpty() && data.by_meaning.isEmpty()) {
                     item { EmptyState("No matches", "Try a broader description or a different title.") }
                 }
             }

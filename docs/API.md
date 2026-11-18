@@ -38,7 +38,7 @@ Errors: `401` missing/invalid token, `422` invalid parameters, `503` bot bridge 
 | GET | `/api/app/whoami` | – | `{ok:true}` (token check) |
 | GET | `/api/app/config` | – | `{ok, version, lan_ip, public_base, has_public, server_name}` |
 | GET | `/api/app/search` | `q`, `type=movie\|series\|live` | array of groups with `variants[].media_key` |
-| GET | `/api/app/discover` | `q`, `kind`, `year_from`, `year_to`, `rating_min`, `lang`, `genre` | fast groups: `{by_name, by_meaning, ai_pending:true}` |
+| GET | `/api/app/discover` | `q`, `kind`, `year_from`, `year_to`, `rating_min`, `lang`, `genre`, `sort=relevance\|newest\|oldest\|rating`, `page`, `page_size` (≤50) | `{items, total, page, page_size, has_more, sort}` + legacy `{by_name, by_meaning, ai_pending}` |
 | GET | `/api/app/discover/ai` | same filters | `{ai_note, ai_picks:[group+reason]}` (LLM, cached 10 min) |
 | GET | `/api/app/similar` | `media_key` | `{title, items:[group]}` |
 | GET | `/api/app/continue` | – | `{items:[{media_key,title,poster,position,duration}]}` |
