@@ -132,6 +132,13 @@ Casting rules the app follows:
 
 ## Changelog
 
+### Panel — 2026-11-19
+
+- **Tokens page shows the full token**: `/tokens` no longer masks active tokens
+  as `abc123…wxyz`. Each row has a **Copy** button, and the copy helper falls
+  back to `document.execCommand("copy")` on plain-HTTP panel URLs (Tailscale,
+  LAN IP) where `navigator.clipboard` is unavailable.
+
 ### 0.3.12 — 2026-11-18
 
 - **Aspect control on the TV player**: press **▲** while playing to cycle

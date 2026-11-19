@@ -16,7 +16,7 @@
   <p class="muted">Copy it now — it will not be shown again.</p>
   <div style="display:flex;gap:var(--s-3);align-items:center;flex-wrap:wrap;margin:var(--s-3) 0;">
     <code id="newtok" style="font-size:15px;word-break:break-all;">{{ created_token }}</code>
-    <button type="button" class="ghost btn--sm" onclick="navigator.clipboard.writeText(document.getElementById('newtok').textContent);this.textContent='Copied'">Copy</button>
+    <button type="button" class="ghost btn--sm" data-label="Copy" onclick="vodCopyFrom('newtok', this)">Copy</button>
   </div>
   <p class="hint">Android app → Settings → server <code>{{ panel_url }}</code> → paste the token.</p>
 </div>
@@ -74,6 +74,7 @@
 
 <div class="card">
   <h2>Active tokens</h2>
+  <p class="hint">Full tokens are shown so you can paste them into a device. This page is protected by the panel password — treat it like a password list.</p>
   {% if tokens %}
   <div class="table-wrap">
     <table>
@@ -82,7 +83,12 @@
         {% for t in tokens %}
         <tr>
           <td><b>{{ t.label or "—" }}</b></td>
-          <td><code>{{ t.token[:6] }}…{{ t.token[-4:] }}</code></td>
+          <td>
+            <div class="token-cell">
+              <code id="token-{{ loop.index }}">{{ t.token }}</code>
+              <button type="button" class="ghost btn--sm" data-label="Copy" onclick="vodCopyFrom('token-{{ loop.index }}', this)">Copy</button>
+            </div>
+          </td>
           <td class="muted">{{ t.created_at }}</td>
           <td class="muted">{{ t.last_seen or "never" }}</td>
           <td>
