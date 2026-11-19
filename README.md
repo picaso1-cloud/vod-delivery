@@ -132,6 +132,14 @@ Casting rules the app follows:
 
 ## Changelog
 
+### Auditor — 2026-11-19
+
+- **Not LLM-only**: a deterministic rule layer now reports interruption storms,
+  `slot_busy` bursts, repeated cast failures and plain `ERROR` lines, so a weak
+  LLM answer no longer means "nothing found". The audit prompt was rewritten
+  (short system prompt, manifest in the user message) and set to temperature 0;
+  the `wedge` regex no longer matches hex ids like `7166142281c0`.
+
 ### Panel — 2026-11-19
 
 - **Tokens page shows the full token**: `/tokens` no longer masks active tokens

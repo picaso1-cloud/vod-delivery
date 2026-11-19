@@ -50,25 +50,24 @@ FEATURES_MANIFEST = """\
 - telegram UX: every user action gets an answer. ANOMALY: 'not handled' updates, stuck flows.
 - app API: requests should answer quickly; sessions should be controllable. ANOMALY: 5xx storms,
   sessions that refuse stop/seek, stale sessions blocking a new cast.
-- known, do NOT report: provider kills long-lived streams (RemoteProtocolError / 'download
-  interrupted' followed by a resumed ranged GET), HEAD/range probes failing, max 1 provider
-  connection, :88 streams redirecting, DLNA control-plane timeouts while a TV is decoding,
-  the neighbour LG on 192.168.1.151.\
+- known, do NOT report: one provider kill of a long stream (RemoteProtocolError / 'download
+  interrupted' followed by a resumed ranged GET that keeps gaining bytes), HEAD/range probes
+  failing, :88 streams redirecting, a DLNA control-plane timeout while a TV is decoding,
+  the neighbour LG on 192.168.1.151.
+- DO report: a burst of download interruptions that gains no ground, 3+ 'provider slot
+  refused/busy' (403) in one window (a previous stream still held the single connection),
+  two sinks playing on one TV, or a session that never serves bytes.\
 """
 
-AUDIT_SYSTEM = """You are the self-audit agent of a home IPTV casting service. You receive:
-1. A manifest describing each feature's goal and its normal/abnormal signals.
-2. Notable events from the service window (warnings/errors + typed events).
-3. DB signals and structured telemetry aggregates.
-
-Analyze ONLY this window against the manifest. Keep reasoning VERY brief (a few short lines).
-Report only issues supported by a concrete event; put that log line or telemetry entry in
-"evidence". Do NOT report the known quirks listed in the manifest. Do NOT invent issues.
-If everything is normal, return an empty findings list.
-
-Reply with brief reasoning first, then ONE JSON object as the last thing in your output:
+AUDIT_SYSTEM = """You are a log triage agent for a home IPTV casting service.
+You receive a feature manifest, then one window of notable events, DB signals and telemetry.
+Go through the events one by one and classify each as normal or abnormal according to the manifest.
+Report only abnormal items that a concrete event supports, and quote that event in "evidence".
+An event that matches a known quirk in the manifest is normal.
+Reply with JSON only, no prose:
 {"findings": [{"severity": "low|medium|high", "feature": "...", "observation": "...",
 "evidence": "...", "likely_cause": "...", "suggested_fix": "..."}]}
+If every event is normal or the window is empty, reply {"findings": []}.
 """
 
 EVENT_PATTERNS = [
@@ -79,7 +78,7 @@ EVENT_PATTERNS = [
     ("dl_done", re.compile(r"library download done: (.+) \((.+) GB\)")),
     ("dl_start", re.compile(r"library download starting: (.+)")),
     ("dl_idle", re.compile(r"download idle|session idle")),
-    ("wedge", re.compile(r"DLNA stack looks wedged|701|716")),
+    ("wedge", re.compile(r"DLNA stack looks wedged|\b(?:701|716)\b")),
     ("tg_error", re.compile(r"query is too old|message is not modified|not handled")),
     ("poster_fail", re.compile(r"poster send failed for (.+?);")),
     ("poll_fail", re.compile(r"poll cycle failed")),
@@ -228,6 +227,73 @@ def _is_known_quirk(finding: dict) -> bool:
     return any(rx.search(blob) for rx in KNOWN_QUIRK_RE)
 
 
+RULE_MIN_INTERRUPTS = 12
+RULE_MIN_SLOT_BUSY = 3
+
+
+def _quirk_text(text: str) -> bool:
+    return any(rx.search(text) for rx in KNOWN_QUIRK_RE)
+
+
+def _rule_findings(events: list[dict], structured: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    interrupts = [e for e in events if e.get("type") == "dl_interrupted"]
+    if len(interrupts) >= RULE_MIN_INTERRUPTS:
+        out.append({
+            "severity": "medium",
+            "feature": "re-stream proxy",
+            "observation": f"Download interrupted {len(interrupts)} times in one audit window, resuming each time.",
+            "evidence": str(interrupts[-1].get("msg", ""))[:200],
+            "likely_cause": "The provider is killing the connection faster than the ranged resume can make progress, or another stream holds the single provider slot.",
+            "suggested_fix": "Confirm no other cast is running, then check the downloader still gains bytes between resumes.",
+        })
+    busy = [
+        e for e in structured
+        if e.get("component") == "provider" and e.get("event") == "slot_busy"
+    ]
+    if len(busy) >= RULE_MIN_SLOT_BUSY:
+        out.append({
+            "severity": "medium",
+            "feature": "casting",
+            "observation": f"Provider refused the slot {len(busy)} times in one audit window (403 slot busy).",
+            "evidence": json.dumps(busy[-1], ensure_ascii=False)[:200],
+            "likely_cause": "A previous live or pipe session still held the provider's single connection when the next stream started.",
+            "suggested_fix": "Verify the previous session is stopped and the slot gate waits before starting; look for orphan ffmpeg processes.",
+        })
+    cast_fail = [e for e in events if e.get("type") in ("attempt_failed", "cast_refused")]
+    if len(cast_fail) >= 2:
+        out.append({
+            "severity": "high",
+            "feature": "casting",
+            "observation": f"{len(cast_fail)} cast attempts failed or were refused in one window.",
+            "evidence": str(cast_fail[-1].get("msg", ""))[:200],
+            "likely_cause": "The TV control plane rejected SetAVTransportURI/Play (wedged DLNA stack or unreachable renderer).",
+            "suggested_fix": "Check the TV is on and its AVTransport answers; power-cycle a wedged DLNA stack before retrying.",
+        })
+    seen = set()
+    for e in events:
+        if e.get("level") not in ("ERROR", "CRITICAL"):
+            continue
+        msg = str(e.get("msg", ""))[:200]
+        if not msg or _quirk_text(msg):
+            continue
+        key = _normalize_key("error", msg)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "severity": "medium",
+            "feature": "service error",
+            "observation": msg,
+            "evidence": f"{e.get('ts')} {msg}"[:200],
+            "likely_cause": "Unexpected error logged by the service.",
+            "suggested_fix": "Inspect the surrounding log lines for this error.",
+        })
+        if len(out) >= 3 + 3:
+            break
+    return out
+
+
 def _quiet(events: list[dict], db_signals: list[dict], structured_failures: list[dict]) -> bool:
     if structured_failures:
         return False
@@ -255,14 +321,15 @@ async def _llm_audit(events: list[dict], db_signals: list[dict], structured: lis
     payload = {
         "model": LLM_MODEL,
         "messages": [
-            {"role": "system", "content": AUDIT_SYSTEM + "\n\nFEATURES MANIFEST:\n" + FEATURES_MANIFEST},
-            {"role": "user", "content": "EVENTS (JSON):\n" + json.dumps(events, ensure_ascii=False)
+            {"role": "system", "content": AUDIT_SYSTEM},
+            {"role": "user", "content": "FEATURES MANIFEST:\n" + FEATURES_MANIFEST
+             + "\n\nEVENTS (JSON):\n" + json.dumps(events, ensure_ascii=False)
              + "\n\nDB SIGNALS (JSON):\n" + json.dumps(db_signals, ensure_ascii=False)
              + "\n\nTELEMETRY AGGREGATES (JSON):\n" + json.dumps(aggregates, ensure_ascii=False)
              + ("\n\nSTRUCTURED FAILURES (JSON):\n" + json.dumps(failures, ensure_ascii=False) if failures else "")
              + ("\n\nSTRUCTURED EVENTS (JSON):\n" + json.dumps(structured, ensure_ascii=False) if structured else "")},
         ],
-        "temperature": 0.2,
+        "temperature": 0.0,
         "max_tokens": 4000,
     }
     try:
@@ -452,19 +519,27 @@ async def run_audit(force: bool = False) -> list[dict]:
     state["last_audit_ts"] = now
     state["log_offset"] = new_offset
     state["runs"] = state.get("runs", 0) + 1
-    if not force and _quiet(events, db_signals, failures):
+    rules = _rule_findings(events, structured)
+    quiet = _quiet(events, db_signals, failures)
+    if not force and quiet and not rules:
         state["quiet_skips"] = state.get("quiet_skips", 0) + 1
         _save_state(state)
         logger.info("audit quiet: no notable events (%d events, %d telemetry) — LLM skipped",
                     len(events), len(structured))
         return []
     _save_state(state)
+    if rules and quiet:
+        fresh = _note_finding(rules)
+        logger.info("audit finished: %d findings (%d new), %d events, %d telemetry (rules only)",
+                    len(rules), len(fresh), len(events), len(structured))
+        return fresh
     findings = await _llm_audit(events, db_signals, structured, aggregates, failures)
     if findings is None:
         state["last_audit_ts"] = prev_ts
         state["log_offset"] = prev_offset
         _save_state(state)
         return []
+    findings = rules + findings
     fresh = _note_finding(findings)
     logger.info("audit finished: %d findings (%d new), %d events, %d telemetry",
                 len(findings), len(fresh), len(events), len(structured))

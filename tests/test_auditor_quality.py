@@ -114,3 +114,71 @@ def test_llm_failure_keeps_the_window(tmp_path, monkeypatch):
     state = json.loads((tmp_path / "state.json").read_text())
     assert state["log_offset"] == 0
     assert state["last_audit_ts"] == 1
+
+
+def test_hex_ids_are_not_wedge_events():
+    events = auditor._extract_events(
+        "2026-01-01 10:00:00,000 WARNING vod-delivery: live source never produced data "
+        "(7166142281c0, channel file 164055.ts) — offline\n"
+    )
+    assert [e["type"] for e in events] == ["raw"]
+
+
+def test_interruption_storm_becomes_a_finding():
+    events = [
+        {"type": "dl_interrupted", "level": "WARNING", "msg": f"download interrupted at {i} bytes"}
+        for i in range(auditor.RULE_MIN_INTERRUPTS)
+    ]
+    findings = auditor._rule_findings(events, [])
+    assert [f["feature"] for f in findings] == ["re-stream proxy"]
+    assert auditor._rule_findings(events[:3], []) == []
+
+
+def test_slot_busy_burst_becomes_a_finding():
+    busy = [
+        {"ts": "2026-01-01T10:00:00", "component": "provider", "event": "slot_busy", "outcome": "refused"}
+        for _ in range(auditor.RULE_MIN_SLOT_BUSY)
+    ]
+    findings = auditor._rule_findings([], busy)
+    assert [f["feature"] for f in findings] == ["casting"]
+    assert auditor._rule_findings([], busy[:1]) == []
+
+
+def test_repeated_cast_failures_are_high():
+    events = [
+        {"type": "attempt_failed", "level": "WARNING", "msg": "attempt direct/copy failed: upnp error: 716"},
+        {"type": "cast_refused", "level": "WARNING", "msg": "TV refused every mode"},
+    ]
+    findings = auditor._rule_findings(events, [])
+    assert findings[0]["severity"] == "high"
+    assert findings[0]["feature"] == "casting"
+
+
+def test_plain_errors_become_findings_but_quirks_do_not():
+    events = [
+        {"type": "raw", "level": "ERROR", "msg": "poll cycle failed"},
+        {"type": "raw", "level": "ERROR", "msg": "provider killed the connection"},
+    ]
+    findings = auditor._rule_findings(events, [])
+    assert len(findings) == 1
+    assert findings[0]["observation"] == "poll cycle failed"
+
+
+def test_rule_findings_are_kept_without_the_llm(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    log = tmp_path / "bot.log"
+    log.write_text("".join(
+        f"2026-01-01 10:00:{i:02d},000 WARNING vod-delivery: download interrupted at {i} bytes "
+        "(+1024 this round): RemoteProtocolError — resuming\n"
+        for i in range(auditor.RULE_MIN_INTERRUPTS)
+    ))
+    monkeypatch.setattr(auditor, "LOG_PATH", log)
+    (tmp_path / "state.json").write_text(json.dumps({"last_audit_ts": 0, "log_offset": 0}))
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("LLM must not be needed for a rule finding")
+
+    monkeypatch.setattr(auditor, "_llm_audit", boom)
+    fresh = asyncio.run(auditor.run_audit(force=False))
+    assert len(fresh) == 1
+    assert fresh[0]["feature"] == "re-stream proxy"
